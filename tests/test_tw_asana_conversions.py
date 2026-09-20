@@ -1,5 +1,4 @@
 import yaml
-from syncall.asana.asana_task import AsanaTask
 from syncall.tw_asana_utils import convert_asana_to_tw, convert_tw_to_asana
 
 from .generic_test_case import GenericTestCase
@@ -88,7 +87,6 @@ class TestTwAsanaConversions(GenericTestCase):
         assert asana_task["due_at"] == self.tw_item_w_due["due"]
         assert "due_on" in asana_task
         assert asana_task["due_on"] == asana_task["due_at"].date()
-
 
     def test_client_prefix_is_split_and_reconstructed(self):
         self.load_sample_items()

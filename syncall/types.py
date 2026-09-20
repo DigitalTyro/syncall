@@ -38,6 +38,9 @@ class TaskwarriorRawItem(TypedDict, total=False):
     uuid: str
     tags: list[str]
     urgency: float
+    client: str
+    notes: str
+    annotations: list[str]
 
 
 # Item as returned from the Taskw Python API on tw.get_task(id=...)
@@ -303,6 +306,8 @@ class AsanaRawTask(TypedDict):
     gid: AsanaGID
     name: str
     modified_at: str
+    html_notes: str
+    comments: list[str] | tuple[str, ...]
 
 
 # Extras --------------------------------------------------------------------------------------

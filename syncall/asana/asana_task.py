@@ -13,18 +13,20 @@ if TYPE_CHECKING:
 
 @dataclass
 class AsanaTask(Mapping):
-    """Represent an Asana task."""
+    """Represent an Asana task plus syncable comment text."""
 
     completed: bool
-    completed_at: datetime.datetime
+    completed_at: datetime.datetime | None
     created_at: datetime.datetime
-    due_at: datetime.datetime
-    due_on: datetime.date
+    due_at: datetime.datetime | None
+    due_on: datetime.date | None
     name: str
-    modified_at: datetime.datetime
+    modified_at: datetime.datetime | None
+    html_notes: str = "<body></body>"
+    comments: tuple[str, ...] = ()
     gid: AsanaGID | None = None
 
-    _key_names: frozenset[str] = frozenset(
+    _required_key_names: frozenset[str] = frozenset(
         {
             "completed",
             "completed_at",
@@ -34,6 +36,13 @@ class AsanaTask(Mapping):
             "gid",
             "name",
             "modified_at",
+        },
+    )
+    _key_names: frozenset[str] = frozenset(
+        {
+            *_required_key_names,
+            "html_notes",
+            "comments",
         },
     )
 
@@ -48,14 +57,8 @@ class AsanaTask(Mapping):
 
     @classmethod
     def from_raw_task(cls, raw_task: AsanaRawTask) -> AsanaTask:
-        assert "completed" in raw_task
-        assert "completed_at" in raw_task
-        assert "created_at" in raw_task
-        assert "due_at" in raw_task
-        assert "due_on" in raw_task
-        assert "gid" in raw_task
-        assert "modified_at" in raw_task
-        assert "name" in raw_task
+        for key in cls._required_key_names:
+            assert key in raw_task
 
         completed = raw_task["completed"]
         completed_at = None
@@ -71,6 +74,10 @@ class AsanaTask(Mapping):
         gid = raw_task["gid"]
         modified_at = parse_datetime(raw_task["modified_at"])
         name = raw_task["name"]
+        html_notes = raw_task.get("html_notes") or "<body></body>"
+
+        comments_raw = raw_task.get("comments", ())
+        comments = tuple(str(comment) for comment in comments_raw)
 
         return AsanaTask(
             completed=completed,
@@ -81,6 +88,8 @@ class AsanaTask(Mapping):
             gid=gid,
             modified_at=modified_at,
             name=name,
+            html_notes=html_notes,
+            comments=comments,
         )
 
     def to_raw_task(self) -> AsanaRawTask:
@@ -89,6 +98,7 @@ class AsanaTask(Mapping):
             "created_at": self.created_at.isoformat(timespec="milliseconds"),
             "gid": self.gid,
             "name": self.name,
+            "html_notes": self.html_notes,
         }
 
         if self.completed_at is not None:

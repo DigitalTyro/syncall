@@ -95,3 +95,24 @@ def test_comment_removal_is_not_destructive_on_asana() -> None:
     side.update_item("1", **changes)
 
     client.tasks.add_comment.assert_not_called()
+
+
+def test_unchanged_markdown_preserves_asana_only_rich_metadata() -> None:
+    side, client = _side()
+    remote = _raw_task()
+    remote["html_notes"] = (
+        '<body><a href="https://app.asana.com/0/0/123" '
+        'data-asana-type="user" data-asana-gid="123">@Sam</a></body>'
+    )
+    client.tasks.find_by_id.return_value = remote
+    client.tasks.stories.return_value = []
+
+    task = side.get_item("1")
+    assert task is not None
+
+    changes = dict(task)
+    changes["html_notes"] = '<body><a href="https://app.asana.com/0/0/123">@Sam</a></body>'
+    side.update_item("1", **changes)
+
+    _, raw_update = client.tasks.update_task.call_args.args
+    assert "html_notes" not in raw_update

@@ -37,6 +37,43 @@ class AsanaSide(SyncSide):
     def finish(self):
         pass
 
+    def _get_follower_task_summaries(self) -> list[dict]:
+        """Fetch all follower-only tasks using Asana search's manual pagination."""
+        results: list[dict] = []
+        created_after = None
+
+        while True:
+            params = {
+                "followers.any": "me",
+                "assignee.not": "me",
+                "sort_by": "created_at",
+                "sort_ascending": True,
+            }
+            if created_after is not None:
+                params["created_at.after"] = created_after
+
+            page = list(
+                self._client.tasks.search_in_workspace(
+                    self._workspace_gid,
+                    params=params,
+                    fields=["gid", "created_at"],
+                    page_size=GET_TASKS_PAGE_SIZE,
+                ),
+            )
+            results.extend(page)
+
+            if len(page) < GET_TASKS_PAGE_SIZE:
+                break
+
+            next_created_after = page[-1].get("created_at")
+            if not next_created_after or next_created_after == created_after:
+                raise RuntimeError(
+                    "Could not advance Asana follower-task search pagination by created_at.",
+                )
+            created_after = next_created_after
+
+        return results
+
     def _get_task_summaries(self) -> list[dict]:
         """Return assigned tasks plus follower-only tasks, deduplicated by GID."""
         assigned = self._client.tasks.find_all(
@@ -48,14 +85,7 @@ class AsanaSide(SyncSide):
         by_gid = {str(task["gid"]): task for task in assigned}
 
         try:
-            followed = self._client.tasks.search_in_workspace(
-                self._workspace_gid,
-                params={
-                    "followers.any": "me",
-                    "assignee.not": "me",
-                },
-                page_size=GET_TASKS_PAGE_SIZE,
-            )
+            followed = self._get_follower_task_summaries()
             for task in followed:
                 by_gid[str(task["gid"])] = task
         except asana.error.PremiumOnlyError as exc:

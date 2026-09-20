@@ -29,8 +29,11 @@ class TestTwAsanaConversions(GenericTestCase):
         """Basic TW -> Asana conversion."""
         self.load_sample_items()
         asana_task_out = convert_tw_to_asana(self.tw_item)
-        for key in AsanaTask._key_names:
-            assert asana_task_out[key] == self.asana_task_expected[key], key
+        for key, value in self.asana_task_expected.items():
+            assert asana_task_out[key] == value, key
+
+        assert asana_task_out.html_notes == "<body></body>"
+        assert asana_task_out.comments == tuple(str(a) for a in self.tw_item["annotations"])
 
     def test_asana_tw_basic_convert(self):
         """Basic Asana -> TW conversion."""
@@ -85,3 +88,54 @@ class TestTwAsanaConversions(GenericTestCase):
         assert asana_task["due_at"] == self.tw_item_w_due["due"]
         assert "due_on" in asana_task
         assert asana_task["due_on"] == asana_task["due_at"].date()
+
+
+    def test_client_prefix_is_split_and_reconstructed(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["name"] = "[Color Wow] Review category pages"
+
+        tw_item = convert_asana_to_tw(asana_task)
+
+        assert tw_item["client"] == "Color Wow"
+        assert tw_item["description"] == "Review category pages"
+
+        round_trip = convert_tw_to_asana(tw_item)
+        assert round_trip.name == "[Color Wow] Review category pages"
+
+    def test_name_without_client_prefix_is_unchanged(self):
+        self.load_sample_items()
+        tw_item = convert_asana_to_tw(self.asana_task)
+
+        assert "client" not in tw_item
+        assert tw_item["description"] == self.asana_task["name"]
+
+    def test_notes_convert_between_markdown_and_asana_html(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["html_notes"] = (
+            "<body><h2>Analysis</h2>Check <strong>revenue</strong>."
+            "<ul><li>UK</li><li>US</li></ul></body>"
+        )
+
+        tw_item = convert_asana_to_tw(asana_task)
+
+        assert "## Analysis" in tw_item["notes"]
+        assert "**revenue**" in tw_item["notes"]
+        assert "- UK" in tw_item["notes"]
+
+        round_trip = convert_tw_to_asana(tw_item)
+        assert "<h2>Analysis</h2>" in round_trip.html_notes
+        assert "<strong>revenue</strong>" in round_trip.html_notes
+
+    def test_comments_map_to_taskwarrior_annotations(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["comments"] = ["First comment", "Second comment"]
+
+        tw_item = convert_asana_to_tw(asana_task)
+
+        assert tw_item["annotations"] == ["First comment", "Second comment"]
+
+        round_trip = convert_tw_to_asana(tw_item)
+        assert round_trip.comments == ("First comment", "Second comment")

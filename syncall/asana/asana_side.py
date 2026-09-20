@@ -1,8 +1,6 @@
 from collections.abc import Sequence
 
 import asana
-from bubop import logger
-
 from syncall.asana.asana_task import AsanaTask
 from syncall.sync_side import SyncSide
 from syncall.types import AsanaGID

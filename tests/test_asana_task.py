@@ -94,7 +94,6 @@ class TestAsanaTask(GenericTestCase):
 
             assert raw_task[key] == asana_task[key].isoformat(**kwargs)
 
-
     def test_optional_rich_text_and_comments_default_cleanly(self):
         valid_raw_task = self.BASE_VALID_RAW_TASK.copy()
         asana_task = AsanaTask.from_raw_task(valid_raw_task)

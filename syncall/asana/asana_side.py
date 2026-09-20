@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 import asana
+
 from syncall.asana.asana_task import AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown
 from syncall.sync_side import SyncSide

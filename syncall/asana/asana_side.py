@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 import asana
 from syncall.asana.asana_task import AsanaTask
+from syncall.asana.rich_text import asana_html_to_markdown
 from syncall.sync_side import SyncSide
 from syncall.types import AsanaGID
 
@@ -132,6 +133,14 @@ class AsanaSide(SyncSide):
         remote_task = self.get_item(item_id)
         if remote_task is None:
             raise RuntimeError(f"Asana task {item_id} disappeared while updating it.")
+
+        desired_html_notes = raw_task.get("html_notes")
+        if desired_html_notes is not None and asana_html_to_markdown(
+            desired_html_notes,
+        ) == asana_html_to_markdown(remote_task.html_notes):
+            # Preserve Asana-only rich-text metadata (for example true mentions)
+            # when the Markdown representation was not actually edited.
+            raw_task.pop("html_notes", None)
 
         if remote_task.get("due_on", None) is None:
             raw_task.pop("due_on", None)

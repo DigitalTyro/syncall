@@ -1,40 +1,57 @@
-"""Asana-related utils."""
+"""Asana-related conversion utilities."""
 
 import datetime
+import re
 
 import dateutil
 from bubop import parse_datetime
 
 from syncall.asana.asana_task import AsanaTask
+from syncall.asana.rich_text import asana_html_to_markdown, markdown_to_asana_html
 from syncall.types import TwItem
+
+_CLIENT_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+
+def split_client_prefix(name: str) -> tuple[str | None, str]:
+    """Split an Asana task name such as [Client] Task into client and task name."""
+    match = _CLIENT_PREFIX_RE.match(name)
+    if match is None:
+        return None, name
+
+    client = match.group(1).strip()
+    description = match.group(2).strip()
+    if not client:
+        return None, name
+    return client, description
+
+
+def build_asana_name(description: str, client: str | None) -> str:
+    """Reconstruct an Asana task name from Taskwarrior fields."""
+    client = (client or "").strip()
+    description = description.strip()
+    if not client:
+        return description
+    return f"[{client}] {description}"
 
 
 def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
-    # Extract Taskwarrior fields
     tw_description = tw_item["description"]
-    tw_due = None
-    if "due" in tw_item:
-        tw_due = tw_item["due"]
-    tw_end = None
-    if "end" in tw_item:
-        tw_end = tw_item["end"]
+    tw_due = tw_item.get("due")
+    tw_end = tw_item.get("end")
     tw_entry = tw_item["entry"]
     tw_modified = tw_item["modified"]
     tw_status = tw_item["status"]
 
-    # Declare Asana fields
     as_completed = False
     as_completed_at = None
     as_created_at = None
     as_due_at = None
     as_due_on = None
     as_modified_at = None
-    as_name = None
 
-    # Convert Taskwarrior fields to Asana fields
     if tw_status == "completed":
         as_completed = True
-
         if tw_end is not None:
             if isinstance(tw_end, datetime.datetime):
                 as_completed_at = tw_end
@@ -48,7 +65,6 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
 
     if tw_due is not None:
         as_due_at = tw_due if isinstance(tw_due, datetime.datetime) else parse_datetime(tw_due)
-
         as_due_on = as_due_at.date()
 
     if isinstance(tw_modified, datetime.datetime):
@@ -56,9 +72,10 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
     else:
         as_modified_at = parse_datetime(tw_modified)
 
-    as_name = tw_description
+    as_name = build_asana_name(tw_description, tw_item.get("client"))
+    as_html_notes = markdown_to_asana_html(str(tw_item.get("notes") or ""))
+    as_comments = tuple(str(annotation) for annotation in tw_item.get("annotations", ()))
 
-    # Build Asana task
     return AsanaTask(
         completed=as_completed,
         completed_at=as_completed_at,
@@ -67,11 +84,12 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
         due_on=as_due_on,
         modified_at=as_modified_at,
         name=as_name,
+        html_notes=as_html_notes,
+        comments=as_comments,
     )
 
 
 def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
-    # Extract Asana fields
     as_completed = asana_task["completed"]
     as_completed_at = asana_task["completed_at"]
     as_created_at = asana_task["created_at"]
@@ -80,14 +98,12 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
     as_modified_at = asana_task["modified_at"]
     as_name = asana_task["name"]
 
-    # Declare Taskwarrior fields
     tw_due = None
     tw_end = None
     tw_entry = None
     tw_modified = None
     tw_status = "pending"
 
-    # Convert Asana fields to Taskwarrior fields
     if isinstance(as_created_at, datetime.datetime):
         tw_entry = as_created_at
     else:
@@ -106,8 +122,6 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
         else:
             tw_modified = parse_datetime(as_modified_at)
 
-    # Asana may give us either 'due_at' (contains time and zone) or 'due_on'
-    # (contains neither).
     if as_due_at is not None:
         if isinstance(as_due_at, datetime.datetime):
             tw_due = as_due_at
@@ -123,7 +137,7 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
         else:
             tw_due = parse_datetime(as_due_on)
 
-    tw_description = as_name
+    client, tw_description = split_client_prefix(as_name)
 
     tw_task = {
         "description": tw_description,
@@ -132,7 +146,12 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
         "entry": tw_entry,
         "modified": tw_modified,
         "status": tw_status,
+        "notes": asana_html_to_markdown(str(asana_task.get("html_notes") or "")),
+        "annotations": [str(comment) for comment in asana_task.get("comments", ())],
     }
+
+    if client is not None:
+        tw_task["client"] = client
 
     if tw_due is not None:
         tw_task["due"] = tw_due

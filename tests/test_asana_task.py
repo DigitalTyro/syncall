@@ -36,7 +36,7 @@ class TestAsanaTask(GenericTestCase):
 
         AsanaTask.from_raw_task(valid_raw_task)
 
-        for key in AsanaTask._key_names:
+        for key in AsanaTask._required_key_names:
             copy = valid_raw_task.copy()
             copy.pop(key, None)
 
@@ -70,7 +70,7 @@ class TestAsanaTask(GenericTestCase):
         asana_task = AsanaTask.from_raw_task(valid_raw_task)
         raw_task = asana_task.to_raw_task()
 
-        for key in ["completed", "gid", "name"]:
+        for key in ["completed", "gid", "name", "html_notes"]:
             assert raw_task[key] == asana_task[key]
 
         for key in ["created_at", "modified_at"]:
@@ -93,3 +93,21 @@ class TestAsanaTask(GenericTestCase):
             assert raw_task[key] is not None
 
             assert raw_task[key] == asana_task[key].isoformat(**kwargs)
+
+
+    def test_optional_rich_text_and_comments_default_cleanly(self):
+        valid_raw_task = self.BASE_VALID_RAW_TASK.copy()
+        asana_task = AsanaTask.from_raw_task(valid_raw_task)
+
+        assert asana_task.html_notes == "<body></body>"
+        assert asana_task.comments == ()
+
+    def test_from_raw_task_accepts_rich_text_and_comments(self):
+        valid_raw_task = self.BASE_VALID_RAW_TASK.copy()
+        valid_raw_task["html_notes"] = "<body><strong>Hello</strong></body>"
+        valid_raw_task["comments"] = ["First", "Second"]
+
+        asana_task = AsanaTask.from_raw_task(valid_raw_task)
+
+        assert asana_task.html_notes == valid_raw_task["html_notes"]
+        assert asana_task.comments == ("First", "Second")

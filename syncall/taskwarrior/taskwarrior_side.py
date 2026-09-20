@@ -49,7 +49,7 @@ def parse_datetime_(dt: str | datetime.datetime) -> datetime.datetime:
     return parse_datetime(dt)
 
 
-def _merge_config_overrides(config_overrides: Mapping[str, Any]) -> dict[str, Any]:
+def merge_config_overrides(config_overrides: Mapping[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(TW_CONFIG_DEFAULT_OVERRIDES)
     for key, value in config_overrides.items():
         if key == "uda" and isinstance(value, Mapping):
@@ -92,7 +92,7 @@ class TaskWarriorSide(SyncSide):
         self._project: str = project or ""
         self._tw_filter: str = tw_filter
 
-        config_overrides_ = _merge_config_overrides(config_overrides)
+        config_overrides_ = merge_config_overrides(config_overrides)
 
         config_file = None
         candidate_config_files = [

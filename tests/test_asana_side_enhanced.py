@@ -40,7 +40,13 @@ def test_task_discovery_combines_assigned_and_follower_only_tasks() -> None:
     )
     client.tasks.search_in_workspace.assert_called_once_with(
         "workspace-1",
-        params={"followers.any": "me", "assignee.not": "me"},
+        params={
+            "followers.any": "me",
+            "assignee.not": "me",
+            "sort_by": "created_at",
+            "sort_ascending": True,
+        },
+        fields=["gid", "created_at"],
         page_size=100,
     )
 
@@ -116,3 +122,20 @@ def test_unchanged_markdown_preserves_asana_only_rich_metadata() -> None:
 
     _, raw_update = client.tasks.update_task.call_args.args
     assert "html_notes" not in raw_update
+
+
+def test_follower_discovery_pages_by_created_at() -> None:
+    side, client = _side()
+    first_page = [
+        {"gid": str(index), "created_at": f"2026-01-01T00:00:{index % 60:02d}.000Z"}
+        for index in range(100)
+    ]
+    first_page[-1]["created_at"] = "2026-01-02T00:00:00.000Z"
+    second_page = [{"gid": "101", "created_at": "2026-01-03T00:00:00.000Z"}]
+    client.tasks.search_in_workspace.side_effect = [first_page, second_page]
+
+    tasks = side._get_follower_task_summaries()
+
+    assert len(tasks) == 101
+    second_call = client.tasks.search_in_workspace.call_args_list[1]
+    assert second_call.kwargs["params"]["created_at.after"] == "2026-01-02T00:00:00.000Z"

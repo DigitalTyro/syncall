@@ -102,8 +102,7 @@ def test_cache_or_reuse_cached_combination(fs, caplog, mock_prefs_manager):
 
 def test_fetch_app_configuration_accepts_name_without_yaml_suffix(fs, mock_prefs_manager):
     del fs
-    mock_prefs_manager.__contains__.side_effect = lambda key: key == "work.yaml"
-    mock_prefs_manager.__getitem__.side_effect = lambda key: {"name": "work"} if key == "work.yaml" else None
+    mock_prefs_manager._conts["work.yaml"] = {"name": "work"}
 
     with patch("syncall.app_utils.PrefsManager", return_value=mock_prefs_manager):
         config = fetch_app_configuration(

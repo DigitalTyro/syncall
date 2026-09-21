@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import datetime
+import json
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -177,8 +179,115 @@ class TaskWarriorSide(SyncSide):
         item["uuid"] = str(item["uuid"])
         return item if item["status"] != "deleted" else None  # type: ignore
 
+    @staticmethod
+    def _annotation_source_entry(annotation: Any) -> datetime.datetime | None:
+        source_entry = getattr(annotation, "source_entry", None)
+        if source_entry is None:
+            return None
+        return parse_datetime_(source_entry)
+
+    @staticmethod
+    def _format_tw_datetime(value: datetime.datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=datetime.timezone.utc)
+        return value.astimezone(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def _repair_annotation_timestamps(
+        self,
+        item_id: str,
+        desired_annotations: Sequence[Any],
+    ) -> int:
+        desired = [
+            annotation
+            for annotation in desired_annotations
+            if self._annotation_source_entry(annotation) is not None
+        ]
+        if not desired:
+            return 0
+
+        raw_export = self._tw._get_json(item_id, "export")  # noqa: SLF001
+        if isinstance(raw_export, list):
+            if not raw_export:
+                return 0
+            raw_task = raw_export[0]
+        else:
+            raw_task = raw_export
+
+        current_annotations = raw_task.get("annotations", ())
+        if not current_annotations:
+            return 0
+
+        desired_by_text: dict[str, list[Any]] = {}
+        current_by_text: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for annotation in desired:
+            desired_by_text.setdefault(str(annotation), []).append(annotation)
+        for index, annotation in enumerate(current_annotations):
+            if not isinstance(annotation, dict):
+                continue
+            current_by_text.setdefault(str(annotation.get("description") or ""), []).append(
+                (index, annotation),
+            )
+
+        repaired = 0
+        for text, desired_group in desired_by_text.items():
+            current_group = current_by_text.get(text, [])
+            if len(current_group) != len(desired_group):
+                logger.warning(
+                    f"Skipping ambiguous annotation timestamp repair for Taskwarrior task "
+                    f"{item_id}: {text!r} occurs {len(current_group)} time(s) locally and "
+                    f"{len(desired_group)} time(s) in Asana.",
+                )
+                continue
+
+            desired_group.sort(
+                key=lambda annotation: self._annotation_source_entry(annotation)
+                or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+            )
+            current_group.sort(
+                key=lambda pair: parse_datetime_(pair[1]["entry"])
+                if pair[1].get("entry")
+                else datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+            )
+
+            for (index, current), desired_annotation in zip(
+                current_group,
+                desired_group,
+                strict=True,
+            ):
+                source_entry = self._annotation_source_entry(desired_annotation)
+                if source_entry is None:
+                    continue
+                expected_entry = self._format_tw_datetime(source_entry)
+                if current.get("entry") == expected_entry:
+                    continue
+                current_annotations[index] = {
+                    **current,
+                    "entry": expected_entry,
+                }
+                repaired += 1
+
+        if repaired == 0:
+            return 0
+
+        raw_task["annotations"] = current_annotations
+        raw_task.pop("id", None)
+        raw_task.pop("urgency", None)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as handle:
+            json.dump(raw_task, handle, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            self._tw._execute("import", handle.name)  # noqa: SLF001
+
+        self._reload_items = True
+        logger.info(
+            f"Repaired {repaired} annotation timestamp(s) on Taskwarrior task {item_id}.",
+        )
+        return repaired
+
     def update_item(self, item_id: str, **changes):
         changes.pop("id", False)
+        desired_annotations = tuple(changes.get("annotations", ()))
         t = self._tw.get_task(uuid=UUID(item_id))[-1]
 
         unwanted_keys = ["imask", "recur", "rtype", "parent", "urgency"]
@@ -188,6 +297,7 @@ class TaskWarriorSide(SyncSide):
         d = dict(t)
         d.update(changes)
         self._tw.task_update(d)
+        self._repair_annotation_timestamps(item_id, desired_annotations)
 
     def add_item(self, item: ItemType) -> ItemType:
         item = cast("TaskwarriorRawItem", item)
@@ -210,6 +320,7 @@ class TaskWarriorSide(SyncSide):
         len_print = min(20, len(description))
 
         logger.trace(f'Adding task "{description[0:len_print]}" with properties:\n\n{item}')
+        desired_annotations = tuple(item.get("annotations", ()))
         new_item = self._tw.task_add(description=description, **item)  # type: ignore
         new_id = new_item["id"]
         logger.debug(f'Task "{new_id}" created - "{description[0:len_print]}"...')
@@ -220,6 +331,7 @@ class TaskWarriorSide(SyncSide):
             )
             self._tw.task_delete(id=new_id)
 
+        self._repair_annotation_timestamps(str(new_item["uuid"]), desired_annotations)
         return cast("ItemType", new_item)
 
     def delete_single_item(self, item_id) -> None:

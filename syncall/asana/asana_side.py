@@ -180,8 +180,8 @@ class AsanaSide(SyncSide):
             )
             with progress:
                 progress_task = progress.add_task("Loading Asana history", total=total)
-                for index, raw_task in enumerate(raw_tasks, start=1):
-                    raw_task = dict(raw_task)
+                for index, discovered_task in enumerate(raw_tasks, start=1):
+                    raw_task = dict(discovered_task)
                     raw_task["comments"] = self._get_cached_comments(raw_task)
                     results.append(AsanaTask.from_raw_task(raw_task))
                     progress.advance(progress_task)

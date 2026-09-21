@@ -98,3 +98,18 @@ def test_cache_or_reuse_cached_combination(fs, caplog, mock_prefs_manager):
         assert "Loading cached configuration" in caplog.text
         assert "1__2__3" in caplog.text
         caplog.clear()
+
+
+def test_fetch_app_configuration_accepts_name_without_yaml_suffix(fs, mock_prefs_manager):
+    del fs
+    mock_prefs_manager.__contains__.side_effect = lambda key: key == "work.yaml"
+    mock_prefs_manager.__getitem__.side_effect = lambda key: {"name": "work"} if key == "work.yaml" else None
+
+    with patch("syncall.app_utils.PrefsManager", return_value=mock_prefs_manager):
+        config = fetch_app_configuration(
+            side_A_name="Taskwarrior",
+            side_B_name="Asana",
+            combination="work",
+        )
+
+    assert config == {"name": "work"}

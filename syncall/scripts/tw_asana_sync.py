@@ -26,6 +26,7 @@ from syncall.aggregator import Aggregator
 from syncall.app_utils import (
     app_log_to_syslog,
     cache_or_reuse_cached_combination,
+    determine_app_config_fname,
     error_and_exit,
     fetch_app_configuration,
     get_resolution_strategy,
@@ -119,7 +120,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "asana_task_gid": asana_task_gid,
                 "resolution_strategy": resolution_strategy,
             },
-            config_fname="tw_asana_configs",
+            config_fname=determine_app_config_fname("Taskwarrior", "Asana"),
             custom_combination_savename=custom_combination_savename,
         )
 

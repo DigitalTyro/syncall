@@ -4,7 +4,7 @@ import datetime
 import re
 
 import dateutil
-from bubop import parse_datetime
+from bubop import logger, parse_datetime
 
 from syncall.asana.asana_task import AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown, markdown_to_asana_html
@@ -89,7 +89,7 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
     )
 
 
-def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
+def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem | None:  # noqa: C901, PLR0912
     as_completed = asana_task["completed"]
     as_completed_at = asana_task["completed_at"]
     as_created_at = asana_task["created_at"]
@@ -138,6 +138,12 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem:  # noqa: C901, PLR0912
             tw_due = parse_datetime(as_due_on)
 
     client, tw_description = split_client_prefix(as_name)
+    if not tw_description.strip():
+        logger.warning(
+            f"Skipping Asana task {asana_task.get('gid') or '<unknown>'}: "
+            "Taskwarrior description would be blank.",
+        )
+        return None
 
     tw_task = {
         "description": tw_description,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
@@ -14,7 +15,7 @@ from xdg import xdg_config_home
 from syncall.sync_side import ItemType, SyncSide
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from syncall.types import TaskwarriorRawItem
 

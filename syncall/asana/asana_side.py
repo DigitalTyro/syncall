@@ -1,5 +1,6 @@
 import datetime
 import json
+import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -234,8 +235,8 @@ class AsanaSide(SyncSide):
 
     @staticmethod
     def _comment_key(comment: str | AsanaComment) -> str:
-        text = str(comment).replace("\r\n", "\n").replace("\r", "\n")
-        return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+        text = unicodedata.normalize("NFC", str(comment))
+        return " ".join(text.split())
 
     def _add_missing_comments(
         self,
@@ -375,8 +376,8 @@ class AsanaSide(SyncSide):
             compare_keys.discard(key)
 
         if "comments" in compare_keys:
-            comments1 = [str(comment) for comment in item1.get("comments", ())]
-            comments2 = [str(comment) for comment in item2.get("comments", ())]
+            comments1 = [cls._comment_key(comment) for comment in item1.get("comments", ())]
+            comments2 = [cls._comment_key(comment) for comment in item2.get("comments", ())]
             if comments1 != comments2:
                 return False
             compare_keys.discard("comments")

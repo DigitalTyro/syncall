@@ -168,6 +168,10 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem | None:  # noqa: C901, 
         ],
     }
 
+    asana_gid = asana_task.get("gid")
+    if asana_gid is not None:
+        tw_task["asana_gid"] = str(asana_gid)
+
     if client is not None:
         tw_task["client"] = client
 

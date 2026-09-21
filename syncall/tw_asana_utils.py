@@ -159,7 +159,10 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem | None:  # noqa: C901, 
                 source_id=str(comment.gid) if comment.gid is not None else None,
                 source_entry=comment.created_at,
             )
-            for comment in asana_task.get("comments", ())
+            for comment in (
+                AsanaComment.from_raw(raw_comment)
+                for raw_comment in asana_task.get("comments", ())
+            )
         ],
     }
 

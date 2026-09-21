@@ -168,30 +168,49 @@ class Aggregator:
         }
         side, _ = self._get_side_instances(helper)
         deleted = set()
-        for registered_id in missing_registered_ids:
-            if side.get_item(registered_id) is None:
-                deleted.add(registered_id)
-            else:
-                logger.debug(
-                    f"[{helper}] Item {registered_id} still exists but is outside the current "
-                    "sync scope; not treating it as deleted.",
-                )
-
-        # Potentially modified items are all the items that exist in the sync side minus the
-        # ones already determined as deleted or new
-        #
-        # For these items, load the cached version and check whether they are the same or not
-        # to actually determine the ones that are changed.
         modified = set()
-        potentially_modified_ids = item_ids.difference(new.union(deleted))
-        for item_id in potentially_modified_ids:
-            item = items[item_id]
-            cached_item = pickle_load(serdes_dir / item_id)
-            if self._item_has_update(prev_item=cached_item, new_item=item, helper=helper):
-                modified.add(item_id)
+        potentially_modified_ids = item_ids.difference(new)
+
+        work_total = len(missing_registered_ids) + len(potentially_modified_ids)
+        progress = make_progress(console=Console(), unit="items")
+        progress_task = None
+        if work_total:
+            progress.start()
+            progress_task = progress.add_task(
+                f"Checking {helper} changes",
+                total=work_total,
+            )
+
+        try:
+            for registered_id in missing_registered_ids:
+                if side.get_item(registered_id) is None:
+                    deleted.add(registered_id)
+                else:
+                    logger.debug(
+                        f"[{helper}] Item {registered_id} still exists but is outside the "
+                        "current sync scope; not treating it as deleted.",
+                    )
+                if progress_task is not None:
+                    progress.advance(progress_task)
+
+            potentially_modified_ids = potentially_modified_ids.difference(deleted)
+            for item_id in potentially_modified_ids:
+                item = items[item_id]
+                cached_item = pickle_load(serdes_dir / item_id)
+                if self._item_has_update(prev_item=cached_item, new_item=item, helper=helper):
+                    modified.add(item_id)
+                if progress_task is not None:
+                    progress.advance(progress_task)
+        finally:
+            if progress_task is not None:
+                progress.stop()
 
         side_changes = SideChanges(new=new, modified=modified, deleted=deleted)
         logger.debug(f"\n\n{side_changes}")
+        Console().print(
+            f"[bold]{helper} changes:[/bold] "
+            f"{len(new):,} new, {len(modified):,} modified, {len(deleted):,} deleted",
+        )
 
         return side_changes
 
@@ -208,17 +227,17 @@ class Aggregator:
             }
         console.print(f"[bold]Found {len(self._items_B):,} Taskwarrior tasks in sync scope[/bold]")
 
-        with console.status("[bold]Detecting changes...[/bold]", spinner="dots"):
-            changes_A = self.detect_changes(self._helper_A, self._items_A)
-            changes_B = self.detect_changes(self._helper_B, self._items_B)
+        changes_A = self.detect_changes(self._helper_A, self._items_A)
+        changes_B = self.detect_changes(self._helper_B, self._items_B)
 
+        side_A_serdes_dir, side_B_serdes_dir = self._get_serdes_dirs(self._helper_A)
         cache_items = [
             *(
-                (item_id, self._items_B[item_id], self._get_serdes_dirs(self._helper_B)[0])
+                (item_id, self._items_B[item_id], side_B_serdes_dir)
                 for item_id in changes_B.new.union(changes_B.modified)
             ),
             *(
-                (item_id, self._items_A[item_id], self._get_serdes_dirs(self._helper_A)[0])
+                (item_id, self._items_A[item_id], side_A_serdes_dir)
                 for item_id in changes_A.new.union(changes_A.modified)
             ),
         ]

@@ -192,6 +192,56 @@ class TaskWarriorSide(SyncSide):
             value = value.replace(tzinfo=datetime.timezone.utc)
         return value.astimezone(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
+    def reconcile_annotation_timestamps(
+        self,
+        item_id: str,
+        desired_annotations: Sequence[Any],
+        *,
+        current_annotations: Sequence[Any] | None = None,
+    ) -> int:
+        """Repair source-backed annotation dates only when the current dates differ."""
+        desired_with_dates = [
+            annotation
+            for annotation in desired_annotations
+            if self._annotation_source_entry(annotation) is not None
+        ]
+        if not desired_with_dates:
+            return 0
+
+        if current_annotations is not None:
+            desired_by_text: dict[str, list[str]] = {}
+            current_by_text: dict[str, list[str]] = {}
+
+            for annotation in desired_with_dates:
+                source_entry = self._annotation_source_entry(annotation)
+                if source_entry is not None:
+                    desired_by_text.setdefault(str(annotation), []).append(
+                        self._format_tw_datetime(source_entry),
+                    )
+
+            for annotation in current_annotations:
+                if isinstance(annotation, dict):
+                    text = str(annotation.get("description") or "")
+                    entry = annotation.get("entry")
+                else:
+                    text = str(annotation)
+                    entry = getattr(annotation, "entry", None)
+                if entry is None:
+                    continue
+                current_by_text.setdefault(text, []).append(
+                    self._format_tw_datetime(parse_datetime_(entry)),
+                )
+
+            already_correct = True
+            for text, desired_entries in desired_by_text.items():
+                if sorted(current_by_text.get(text, ())) != sorted(desired_entries):
+                    already_correct = False
+                    break
+            if already_correct:
+                return 0
+
+        return self._repair_annotation_timestamps(item_id, desired_annotations)
+
     def _repair_annotation_timestamps(
         self,
         item_id: str,
@@ -280,7 +330,7 @@ class TaskWarriorSide(SyncSide):
             self._tw._execute("import", handle.name)  # noqa: SLF001
 
         self._reload_items = True
-        logger.info(
+        logger.debug(
             f"Repaired {repaired} annotation timestamp(s) on Taskwarrior task {item_id}.",
         )
         return repaired

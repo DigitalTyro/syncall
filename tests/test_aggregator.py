@@ -86,7 +86,6 @@ def test_missing_filtered_item_that_is_gone_is_deleted(tmp_path) -> None:
     side.get_item.assert_called_once_with("1")
 
 
-
 def test_item_getter_uses_current_snapshot_before_live_side() -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()

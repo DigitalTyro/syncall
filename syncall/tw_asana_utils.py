@@ -6,9 +6,9 @@ import re
 import dateutil
 from bubop import logger, parse_datetime
 
-from syncall.asana.asana_task import AsanaTask
+from syncall.asana.asana_task import AsanaComment, AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown, markdown_to_asana_html
-from syncall.types import TwItem
+from syncall.types import SyncAnnotation, TwItem
 
 _CLIENT_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
 
@@ -74,7 +74,7 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
 
     as_name = build_asana_name(tw_description, tw_item.get("client"))
     as_html_notes = markdown_to_asana_html(str(tw_item.get("notes") or ""))
-    as_comments = tuple(str(annotation) for annotation in tw_item.get("annotations", ()))
+    as_comments = tuple(AsanaComment(text=str(annotation)) for annotation in tw_item.get("annotations", ()))
 
     return AsanaTask(
         completed=as_completed,
@@ -153,7 +153,14 @@ def convert_asana_to_tw(asana_task: AsanaTask) -> TwItem | None:  # noqa: C901, 
         "modified": tw_modified,
         "status": tw_status,
         "notes": asana_html_to_markdown(str(asana_task.get("html_notes") or "")),
-        "annotations": [str(comment) for comment in asana_task.get("comments", ())],
+        "annotations": [
+            SyncAnnotation(
+                comment.text,
+                source_id=str(comment.gid) if comment.gid is not None else None,
+                source_entry=comment.created_at,
+            )
+            for comment in asana_task.get("comments", ())
+        ],
     }
 
     if client is not None:

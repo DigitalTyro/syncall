@@ -53,6 +53,26 @@ def _acquire_sync_lock():
     return handle
 
 
+def _resume_pending_asana_comments(
+    tw_side: TaskWarriorSide,
+    asana_side: AsanaSide,
+    items: list[dict],
+) -> int:
+    """Resume interrupted TW→Asana comment creation from Taskwarrior-owned markers."""
+    resumed = 0
+    for item in items:
+        if not item.get("asana_pending_comments") or not item.get("asana_gid"):
+            continue
+        desired_asana = convert_tw_to_asana(item)
+        asana_side.ensure_comments(
+            str(item["asana_gid"]),
+            desired_asana.comments,
+        )
+        tw_side.clear_pending_asana_comments(str(item["uuid"]))
+        resumed += 1
+    return resumed
+
+
 # CLI parsing ---------------------------------------------------------------------------------
 @click.command()
 @opts_asana(hidden_gid=False)
@@ -269,15 +289,16 @@ def main(  # noqa: PLR0915, C901, PLR0912
         # Resume any interrupted TW→Asana task creation before normal change detection.
         # The marker lives on the Taskwarrior task itself, so this does not depend on
         # syncall's cache or preference files.
-        for item in existing_tw_items:
-            if not item.get("asana_pending_comments") or not item.get("asana_gid"):
-                continue
-            desired_asana = convert_tw_to_asana(item)
-            asana_side.ensure_comments(
-                str(item["asana_gid"]),
-                desired_asana.comments,
+        resumed_pending = _resume_pending_asana_comments(
+            tw_side,
+            asana_side,
+            existing_tw_items,
+        )
+        if resumed_pending:
+            logger.info(
+                f"Resumed comment synchronization for {resumed_pending} interrupted "
+                "Taskwarrior→Asana task(s).",
             )
-            tw_side.clear_pending_asana_comments(str(item["uuid"]))
 
         existing_tw_items = tw_side.get_all_items()
         recovered = {

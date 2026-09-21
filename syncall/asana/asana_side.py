@@ -199,17 +199,12 @@ class AsanaSide(SyncSide):
                     return ()
 
                 checked_at = cached.get("checked_at")
-                if checked_at is None:
-                    cached["checked_at"] = datetime.datetime.now(
-                        datetime.timezone.utc,
-                    ).isoformat()
-                    self._comment_cache_dirty = True
-                    return structured_comments
-
-                try:
-                    last_checked = datetime.datetime.fromisoformat(str(checked_at))
-                except ValueError:
-                    last_checked = None
+                last_checked = None
+                if checked_at is not None:
+                    try:
+                        last_checked = datetime.datetime.fromisoformat(str(checked_at))
+                    except ValueError:
+                        last_checked = None
 
                 if last_checked is not None:
                     cache_age = datetime.datetime.now(datetime.timezone.utc) - last_checked

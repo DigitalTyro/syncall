@@ -88,6 +88,7 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
         name=as_name,
         html_notes=as_html_notes,
         comments=as_comments,
+        source_tw_uuid=str(tw_item["uuid"]) if tw_item.get("uuid") is not None else None,
     )
 
 

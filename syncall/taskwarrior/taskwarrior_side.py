@@ -337,7 +337,6 @@ class TaskWarriorSide(SyncSide):
 
     def update_item(self, item_id: str, **changes):
         changes.pop("id", False)
-        desired_annotations = tuple(changes.get("annotations", ()))
         t = self._tw.get_task(uuid=UUID(item_id))[-1]
 
         unwanted_keys = ["imask", "recur", "rtype", "parent", "urgency"]
@@ -347,7 +346,6 @@ class TaskWarriorSide(SyncSide):
         d = dict(t)
         d.update(changes)
         self._tw.task_update(d)
-        self._repair_annotation_timestamps(item_id, desired_annotations)
 
     def add_item(self, item: ItemType) -> ItemType:
         item = cast("TaskwarriorRawItem", item)
@@ -370,7 +368,6 @@ class TaskWarriorSide(SyncSide):
         len_print = min(20, len(description))
 
         logger.trace(f'Adding task "{description[0:len_print]}" with properties:\n\n{item}')
-        desired_annotations = tuple(item.get("annotations", ()))
         new_item = self._tw.task_add(description=description, **item)  # type: ignore
         new_id = new_item["id"]
         logger.debug(f'Task "{new_id}" created - "{description[0:len_print]}"...')
@@ -381,7 +378,6 @@ class TaskWarriorSide(SyncSide):
             )
             self._tw.task_delete(id=new_id)
 
-        self._repair_annotation_timestamps(str(new_item["uuid"]), desired_annotations)
         return cast("ItemType", new_item)
 
     def delete_single_item(self, item_id) -> None:

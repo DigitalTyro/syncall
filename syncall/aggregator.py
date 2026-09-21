@@ -368,6 +368,7 @@ class Aggregator:
                 source_tw_uuid = str(source_tw_uuid)
                 _, source_side = self._get_side_instances(helper)
                 checkpoint_errors = []
+                checkpoint_successes = 0
 
                 try:
                     existing_asana_id = self._B_to_A_map.get(source_tw_uuid)
@@ -378,6 +379,7 @@ class Aggregator:
                         )
                     self._B_to_A_map[source_tw_uuid] = item_created_id
                     self.flush_correspondences()
+                    checkpoint_successes += 1
                 except Exception as exc:
                     checkpoint_errors.append(exc)
 
@@ -385,14 +387,16 @@ class Aggregator:
                 if callable(record_asana_gid):
                     try:
                         record_asana_gid(source_tw_uuid, item_created_id)
+                        checkpoint_successes += 1
                     except Exception as exc:
                         checkpoint_errors.append(exc)
 
-                if len(checkpoint_errors) == 2:
+                if checkpoint_successes == 0:
+                    cause = checkpoint_errors[-1] if checkpoint_errors else None
                     raise RuntimeError(
                         "Could not durably checkpoint the new Asana task identity; "
                         "refusing to create comments.",
-                    ) from checkpoint_errors[-1]
+                    ) from cause
 
             post_create_sync = getattr(item_side, "post_create_sync", None)
             if callable(post_create_sync):

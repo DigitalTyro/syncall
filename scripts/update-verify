@@ -16,8 +16,11 @@ cd "$REPO_DIR"
 echo "==> Pulling latest master"
 git pull --ff-only origin master
 
+echo "==> Ensuring Rich UI dependency is installed"
+"$PYTHON" -m pip install 'rich>=13.7,<15'
+
 echo "==> Installing current syncall code into .venv"
-"$PYTHON" -m pip install --upgrade --force-reinstall .
+"$PYTHON" -m pip install --upgrade --force-reinstall --no-deps .
 
 echo "==> Checking dependencies"
 "$PYTHON" -m pip check

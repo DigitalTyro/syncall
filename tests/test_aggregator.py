@@ -177,17 +177,24 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     item = MagicMock()
     item.source_tw_uuid = "tw-source"
 
+    aggregator._B_to_A_map = bidict()
+    aggregator.flush_correspondences = MagicMock(
+        side_effect=lambda: events.append("prefs"),
+    )
     aggregator._get_side_instances = MagicMock(
         return_value=(target_side, source_side),
     )
     aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
     aggregator._summary_of = MagicMock(return_value="Created")
     aggregator._advance_operation_progress = MagicMock()
+    aggregator._operation_failed = False
+    aggregator._written_serdes = set()
 
     created_id = aggregator.inserter_to(item, helper)
 
     assert created_id == "asana-new"
-    assert events == ["identity", "comments", "clear"]
+    assert events == ["prefs", "identity", "comments", "clear"]
+    assert aggregator._B_to_A_map["tw-source"] == "asana-new"
     source_side.record_asana_gid.assert_called_once_with("tw-source", "asana-new")
     source_side.clear_pending_asana_comments.assert_called_once_with("tw-source")
 
@@ -327,3 +334,72 @@ def test_authoritative_written_snapshot_is_not_overwritten_by_pre_sync_cache(tmp
         aggregator.sync()
 
         pickle_dump_mock.assert_not_called()
+
+
+def test_new_asana_task_comments_continue_if_one_identity_checkpoint_succeeds(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    helper.id_key = "gid"
+    helper.name = "Asana"
+    helper.summary_key = "name"
+    helper.other = MagicMock()
+    target_side = MagicMock()
+    source_side = MagicMock()
+    target_side.add_item.return_value = {"gid": "asana-new", "name": "Created"}
+    source_side.record_asana_gid.side_effect = RuntimeError("Taskwarrior write failed")
+    item = MagicMock()
+    item.source_tw_uuid = "tw-source"
+
+    aggregator._B_to_A_map = bidict()
+    aggregator.flush_correspondences = MagicMock()
+    aggregator._get_side_instances = MagicMock(
+        return_value=(target_side, source_side),
+    )
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._summary_of = MagicMock(return_value="Created")
+    aggregator._advance_operation_progress = MagicMock()
+    aggregator._operation_failed = False
+    aggregator._written_serdes = set()
+
+    created_id = aggregator.inserter_to(item, helper)
+
+    assert created_id == "asana-new"
+    target_side.post_create_sync.assert_called_once_with("asana-new", item)
+
+
+def test_new_asana_task_refuses_comments_if_identity_cannot_be_checkpointed(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    helper.id_key = "gid"
+    helper.name = "Asana"
+    helper.summary_key = "name"
+    helper.other = MagicMock()
+    target_side = MagicMock()
+    source_side = MagicMock()
+    target_side.add_item.return_value = {"gid": "asana-new", "name": "Created"}
+    source_side.record_asana_gid.side_effect = RuntimeError("Taskwarrior write failed")
+    item = MagicMock()
+    item.source_tw_uuid = "tw-source"
+
+    aggregator._B_to_A_map = bidict()
+    aggregator.flush_correspondences = MagicMock(
+        side_effect=RuntimeError("Preferences write failed"),
+    )
+    aggregator._get_side_instances = MagicMock(
+        return_value=(target_side, source_side),
+    )
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._summary_of = MagicMock(return_value="Created")
+    aggregator._advance_operation_progress = MagicMock()
+    aggregator._operation_failed = False
+    aggregator._written_serdes = set()
+
+    try:
+        aggregator.inserter_to(item, helper)
+    except RuntimeError as exc:
+        assert "refusing to create comments" in str(exc)
+    else:
+        raise AssertionError("Expected creation to stop before comment writes")
+
+    target_side.post_create_sync.assert_not_called()
+    assert aggregator._operation_failed is True

@@ -265,6 +265,21 @@ def main(  # noqa: PLR0915, C901, PLR0912
         ),
     ) as aggregator:
         existing_tw_items = tw_side.get_all_items()
+
+        # Resume any interrupted TW→Asana task creation before normal change detection.
+        # The marker lives on the Taskwarrior task itself, so this does not depend on
+        # syncall's cache or preference files.
+        for item in existing_tw_items:
+            if not item.get("asana_pending_comments") or not item.get("asana_gid"):
+                continue
+            desired_asana = convert_tw_to_asana(item)
+            asana_side.ensure_comments(
+                str(item["asana_gid"]),
+                desired_asana.comments,
+            )
+            tw_side.clear_pending_asana_comments(str(item["uuid"]))
+
+        existing_tw_items = tw_side.get_all_items()
         recovered = {
             str(item["uuid"]): str(item["asana_gid"])
             for item in existing_tw_items

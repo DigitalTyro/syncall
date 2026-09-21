@@ -403,3 +403,36 @@ def test_new_asana_task_refuses_comments_if_identity_cannot_be_checkpointed(tmp_
 
     target_side.post_create_sync.assert_not_called()
     assert aggregator._operation_failed is True
+
+
+def test_failed_update_checkpoints_actual_target_for_safe_retry(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    helper.name = "Asana"
+    helper.summary_key = "name"
+    helper.other = MagicMock()
+    side = MagicMock()
+    side.update_item.side_effect = RuntimeError("partial remote failure")
+    current_target = {"gid": "a1", "name": "Partially updated remote"}
+    side.get_item.return_value = current_target
+
+    aggregator._get_side_instances = MagicMock(return_value=(side, MagicMock()))
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._summary_of = MagicMock(return_value="Task")
+    aggregator._operation_failed = False
+    aggregator._written_serdes = set()
+    aggregator._advance_operation_progress = MagicMock()
+
+    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
+        try:
+            aggregator.updater_to("a1", {"name": "Desired"}, helper)
+        except RuntimeError as exc:
+            assert "partial remote failure" in str(exc)
+        else:
+            raise AssertionError("Expected simulated partial update failure")
+
+        pickle_dump_mock.assert_called_once_with(current_target, tmp_path / "a1")
+
+    side.get_item.assert_called_once_with("a1", use_cached=False)
+    assert aggregator._operation_failed is True
+    assert ("Asana", "a1") in aggregator._written_serdes

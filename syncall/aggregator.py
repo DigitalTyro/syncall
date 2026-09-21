@@ -133,6 +133,7 @@ class Aggregator:
         self._items_B: dict[ID, Item] = {}
         self._operation_progress = None
         self._operation_progress_task = None
+        self._operation_failed = False
         self.cleaned_up = False
 
     def __enter__(self) -> Self:
@@ -243,22 +244,13 @@ class Aggregator:
                 for item_id in changes_A.new.union(changes_A.modified)
             ),
         ]
-        if cache_items:
-            progress = make_progress(console=console, unit="items")
-            with progress:
-                progress_task = progress.add_task("Saving sync state", total=len(cache_items))
-                for item_id, item, serdes_dir in cache_items:
-                    pickle_dump(item, serdes_dir / item_id)
-                    progress.advance(progress_task)
-
-        self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
-        self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
 
         total_operations = self._count_sync_operations(changes_A, changes_B)
         if total_operations == 0:
             console.print("[bold green]Already in sync[/bold green]")
             return
 
+        self._operation_failed = False
         progress = make_progress(console=console, unit="ops")
         with progress:
             self._operation_progress = progress
@@ -271,6 +263,24 @@ class Aggregator:
             finally:
                 self._operation_progress = None
                 self._operation_progress_task = None
+                self.flush_correspondences()
+
+        if self._operation_failed:
+            raise RuntimeError(
+                "One or more sync writes failed; sync state was not committed so the "
+                "next run can retry safely.",
+            )
+
+        if cache_items:
+            progress = make_progress(console=console, unit="items")
+            with progress:
+                progress_task = progress.add_task("Saving sync state", total=len(cache_items))
+                for item_id, item, serdes_dir in cache_items:
+                    pickle_dump(item, serdes_dir / item_id)
+                    progress.advance(progress_task)
+
+        self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
+        self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
 
     def start(self) -> None:
         """Initialize the aggregator."""
@@ -331,26 +341,29 @@ class Aggregator:
             f" {helper}...",
         )
 
-        item_created = item_side.add_item(item)
-        item_created_id = str(item_created[helper.id_key])
+        try:
+            item_created = item_side.add_item(item)
+            item_created_id = str(item_created[helper.id_key])
 
-        source_tw_uuid = getattr(item, "source_tw_uuid", None)
-        if source_tw_uuid is not None:
-            _, source_side = self._get_side_instances(helper)
-            record_asana_gid = getattr(source_side, "record_asana_gid", None)
-            if callable(record_asana_gid):
-                record_asana_gid(str(source_tw_uuid), item_created_id)
+            source_tw_uuid = getattr(item, "source_tw_uuid", None)
+            if source_tw_uuid is not None:
+                _, source_side = self._get_side_instances(helper)
+                record_asana_gid = getattr(source_side, "record_asana_gid", None)
+                if callable(record_asana_gid):
+                    record_asana_gid(str(source_tw_uuid), item_created_id)
 
-        post_create_sync = getattr(item_side, "post_create_sync", None)
-        if callable(post_create_sync):
-            post_create_sync(item_created_id, item)
+            post_create_sync = getattr(item_side, "post_create_sync", None)
+            if callable(post_create_sync):
+                post_create_sync(item_created_id, item)
 
-        # Cache both sides with pickle - f=id_
-        logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
-        pickle_dump(item_created, serdes_dir / item_created_id)
-        self._advance_operation_progress()
-
-        return item_created_id
+            # Cache both sides with pickle - f=id_
+            logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
+            pickle_dump(item_created, serdes_dir / item_created_id)
+            self._advance_operation_progress()
+            return item_created_id
+        except Exception:
+            self._operation_failed = True
+            raise
 
     def updater_to(self, item_id: ID, item: Item, helper: SideHelper):
         """Update an item using the given side helper."""
@@ -361,18 +374,25 @@ class Aggregator:
             f" {helper}...",
         )
 
-        side.update_item(item_id, **item)
-        pickle_dump(item, serdes_dir / item_id)
-        self._advance_operation_progress()
+        try:
+            side.update_item(item_id, **item)
+            pickle_dump(item, serdes_dir / item_id)
+            self._advance_operation_progress()
+        except Exception:
+            self._operation_failed = True
+            raise
 
     def deleter_to(self, item_id: ID, helper: SideHelper):
         """Delete an item using the given side helper."""
         logger.debug(f"[{helper}] Synchronising deleted item, id -> {item_id}...")
         side, _ = self._get_side_instances(helper)
-        side.delete_single_item(item_id)
-
-        self._remove_serdes_files(helper=helper, ids=(item_id,))
-        self._advance_operation_progress()
+        try:
+            side.delete_single_item(item_id)
+            self._remove_serdes_files(helper=helper, ids=(item_id,))
+            self._advance_operation_progress()
+        except Exception:
+            self._operation_failed = True
+            raise
 
     def item_getter_for(self, item_id: ID, helper: SideHelper) -> Item:
         """Return an item from the current sync snapshot, falling back to the live side."""

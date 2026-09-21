@@ -363,7 +363,7 @@ class Aggregator:
             item_created = item_side.add_item(item)
             item_created_id = str(item_created[helper.id_key])
 
-            source_tw_uuid = getattr(item, "source_tw_uuid", None)
+            source_tw_uuid = getattr(item, "source_tw_uuid", None)  # noqa: B009
             if source_tw_uuid is not None:
                 source_tw_uuid = str(source_tw_uuid)
                 _, source_side = self._get_side_instances(helper)
@@ -380,15 +380,19 @@ class Aggregator:
                     self._B_to_A_map[source_tw_uuid] = item_created_id
                     self.flush_correspondences()
                     checkpoint_successes += 1
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     checkpoint_errors.append(exc)
 
-                record_asana_gid = getattr(source_side, "record_asana_gid", None)
+                record_asana_gid = getattr(  # noqa: B009
+                    source_side,
+                    "record_asana_gid",
+                    None,
+                )
                 if callable(record_asana_gid):
                     try:
                         record_asana_gid(source_tw_uuid, item_created_id)
                         checkpoint_successes += 1
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         checkpoint_errors.append(exc)
 
                 if checkpoint_successes == 0:
@@ -398,13 +402,17 @@ class Aggregator:
                         "refusing to create comments.",
                     ) from cause
 
-            post_create_sync = getattr(item_side, "post_create_sync", None)
+            post_create_sync = getattr(item_side, "post_create_sync", None)  # noqa: B009
             if callable(post_create_sync):
                 post_create_sync(item_created_id, item)
 
             if source_tw_uuid is not None:
                 _, source_side = self._get_side_instances(helper)
-                clear_pending = getattr(source_side, "clear_pending_asana_comments", None)
+                clear_pending = getattr(  # noqa: B009
+                    source_side,
+                    "clear_pending_asana_comments",
+                    None,
+                )
                 if callable(clear_pending):
                     clear_pending(str(source_tw_uuid))
 
@@ -414,7 +422,7 @@ class Aggregator:
             self._written_serdes.add((helper.name, item_created_id))
             self._advance_operation_progress()
             return item_created_id
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._operation_failed = True
             raise
 
@@ -439,7 +447,7 @@ class Aggregator:
                 if current_target is not None:
                     pickle_dump(current_target, serdes_dir / item_id)
                     self._written_serdes.add((helper.name, item_id))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 logger.opt(exception=True).warning(
                     f"[{helper}] Could not checkpoint target state after a failed update.",
                 )

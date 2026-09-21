@@ -212,9 +212,7 @@ class AsanaSide(SyncSide):
                     last_checked = None
 
                 if last_checked is not None:
-                    cache_age = (
-                        datetime.datetime.now(datetime.timezone.utc) - last_checked
-                    )
+                    cache_age = datetime.datetime.now(datetime.timezone.utc) - last_checked
                     if cache_age < COMMENT_CACHE_MAX_AGE:
                         return structured_comments
 

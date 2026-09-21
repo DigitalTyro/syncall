@@ -36,6 +36,17 @@ def test_task_discovery_combines_assigned_and_follower_only_tasks() -> None:
     client.tasks.find_all.assert_called_once_with(
         assignee="me",
         workspace="workspace-1",
+        fields=[
+            "completed",
+            "completed_at",
+            "created_at",
+            "due_at",
+            "due_on",
+            "gid",
+            "html_notes",
+            "modified_at",
+            "name",
+        ],
         page_size=100,
     )
     client.tasks.search_in_workspace.assert_called_once_with(
@@ -46,7 +57,17 @@ def test_task_discovery_combines_assigned_and_follower_only_tasks() -> None:
             "sort_by": "created_at",
             "sort_ascending": True,
         },
-        fields=["gid", "created_at"],
+        fields=[
+            "completed",
+            "completed_at",
+            "created_at",
+            "due_at",
+            "due_on",
+            "gid",
+            "html_notes",
+            "modified_at",
+            "name",
+        ],
         page_size=100,
     )
 
@@ -139,3 +160,62 @@ def test_follower_discovery_pages_by_created_at() -> None:
     assert len(tasks) == 101
     second_call = client.tasks.search_in_workspace.call_args_list[1]
     assert second_call.kwargs["params"]["created_at.after"] == "2026-01-02T00:00:00.000Z"
+
+
+def test_get_all_items_reuses_detailed_discovery_payloads(tmp_path) -> None:
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=tmp_path / "comments.json",
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = []
+
+    tasks = side.get_all_items()
+
+    assert [task.gid for task in tasks] == ["1"]
+    client.tasks.find_by_id.assert_not_called()
+    client.tasks.stories.assert_called_once_with(
+        "1",
+        fields=["gid", "resource_subtype", "text", "type"],
+        page_size=100,
+    )
+
+
+def test_comment_cache_skips_unchanged_story_fetch(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    raw_task = _raw_task("1")
+    client.tasks.find_all.return_value = [raw_task]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {"gid": "s1", "type": "comment", "text": "Cached comment"},
+    ]
+
+    first = side.get_all_items()
+    side.finish()
+
+    second_client = MagicMock()
+    second_side = AsanaSide(
+        client=second_client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    second_client.tasks.find_all.return_value = [raw_task]
+    second_client.tasks.search_in_workspace.return_value = []
+
+    second = second_side.get_all_items()
+
+    assert first[0].comments == ("Cached comment",)
+    assert second[0].comments == ("Cached comment",)
+    second_client.tasks.stories.assert_not_called()

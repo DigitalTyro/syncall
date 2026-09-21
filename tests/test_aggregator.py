@@ -121,3 +121,70 @@ def test_count_sync_operations_counts_conflict_once() -> None:
     aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
 
     assert aggregator._count_sync_operations(changes_A, changes_B) == 3
+
+
+def test_recover_correspondences_rebuilds_missing_mapping() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    aggregator._B_to_A_map = bidict()
+
+    recovered = aggregator.recover_correspondences(
+        {"tw-1": "asana-1", "tw-2": "asana-2"},
+    )
+
+    assert recovered == 2
+    assert aggregator._B_to_A_map == bidict(
+        {"tw-1": "asana-1", "tw-2": "asana-2"},
+    )
+
+
+def test_recover_correspondences_is_idempotent() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+
+    recovered = aggregator.recover_correspondences({"tw-1": "asana-1"})
+
+    assert recovered == 0
+    assert aggregator._B_to_A_map == bidict({"tw-1": "asana-1"})
+
+
+def test_recover_correspondences_refuses_conflicting_identity() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+
+    try:
+        aggregator.recover_correspondences({"tw-1": "asana-other"})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Expected conflicting recovered identity to abort")
+
+
+def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    helper.id_key = "gid"
+    helper.summary_key = "name"
+    helper.other = MagicMock()
+    target_side = MagicMock()
+    source_side = MagicMock()
+    created = {"gid": "asana-new", "name": "Created"}
+    target_side.add_item.return_value = created
+    events: list[str] = []
+
+    source_side.record_asana_gid.side_effect = lambda *_: events.append("identity")
+    target_side.post_create_sync.side_effect = lambda *_: events.append("comments")
+    item = MagicMock()
+    item.source_tw_uuid = "tw-source"
+
+    aggregator._get_side_instances = MagicMock(
+        return_value=(target_side, source_side),
+    )
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._summary_of = MagicMock(return_value="Created")
+    aggregator._advance_operation_progress = MagicMock()
+
+    created_id = aggregator.inserter_to(item, helper)
+
+    assert created_id == "asana-new"
+    assert events == ["identity", "comments"]
+    source_side.record_asana_gid.assert_called_once_with("tw-source", "asana-new")

@@ -138,7 +138,6 @@ class TestTwAsanaConversions(GenericTestCase):
         round_trip = convert_tw_to_asana(tw_item)
         assert round_trip.comments == ("First comment", "Second comment")
 
-
     def test_blank_asana_description_is_skipped(self):
         self.load_sample_items()
         asana_task = dict(self.asana_task)

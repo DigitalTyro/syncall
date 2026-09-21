@@ -434,6 +434,15 @@ class Aggregator:
             self._advance_operation_progress()
         except Exception:
             self._operation_failed = True
+            try:
+                current_target = side.get_item(item_id, use_cached=False)
+                if current_target is not None:
+                    pickle_dump(current_target, serdes_dir / item_id)
+                    self._written_serdes.add((helper.name, item_id))
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"[{helper}] Could not checkpoint target state after a failed update.",
+                )
             raise
 
     def deleter_to(self, item_id: ID, helper: SideHelper):

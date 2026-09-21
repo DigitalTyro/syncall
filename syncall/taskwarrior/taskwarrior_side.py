@@ -317,13 +317,17 @@ class TaskWarriorSide(SyncSide):
             return 0
 
         desired_group.sort(
-            key=lambda annotation: self._annotation_source_entry(annotation)
-            or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+            key=lambda annotation: (
+                self._annotation_source_entry(annotation)
+                or datetime.datetime.min.replace(tzinfo=datetime.UTC)
+            ),
         )
         current_group.sort(
-            key=lambda pair: parse_datetime_(pair[1]["entry"])
-            if pair[1].get("entry")
-            else datetime.datetime.min.replace(tzinfo=datetime.UTC),
+            key=lambda pair: (
+                parse_datetime_(pair[1]["entry"])
+                if pair[1].get("entry")
+                else datetime.datetime.min.replace(tzinfo=datetime.UTC)
+            ),
         )
 
         repaired = 0
@@ -481,7 +485,9 @@ class TaskWarriorSide(SyncSide):
         for raw_task in raw_tasks:
             task_uuid = str(raw_task.get("uuid") or "")
             asana_gid = mapping.get(task_uuid)
-            if asana_gid is None or str(raw_task.get(tw_asana_gid_key) or "") == str(asana_gid):
+            if asana_gid is None or str(raw_task.get(tw_asana_gid_key) or "") == str(
+                asana_gid
+            ):
                 continue
             raw_task[tw_asana_gid_key] = str(asana_gid)
             raw_task.pop("id", None)

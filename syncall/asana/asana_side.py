@@ -4,6 +4,20 @@ from pathlib import Path
 
 import asana
 from bubop import logger
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    ProgressColumn,
+    SpinnerColumn,
+    Task,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.text import Text
 
 from syncall.asana.asana_task import AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown
@@ -23,6 +37,16 @@ TASK_FIELDS = [
     "name",
 ]
 STORY_FIELDS = ["gid", "resource_subtype", "text", "type"]
+
+
+class TaskRateColumn(ProgressColumn):
+    """Display processing throughput for task progress."""
+
+    def render(self, task: Task) -> Text:
+        speed = task.speed
+        if speed is None:
+            return Text("-- tasks/s")
+        return Text(f"{speed:.1f} tasks/s")
 
 
 class AsanaSide(SyncSide):
@@ -136,19 +160,34 @@ class AsanaSide(SyncSide):
         results = []
 
         if self._task_gid is None:
-            raw_tasks = self._get_task_summaries()
+            console = Console()
+            with console.status("[bold]Discovering Asana tasks...[/bold]", spinner="dots"):
+                raw_tasks = self._get_task_summaries()
+
             total = len(raw_tasks)
-            logger.info(f"Discovered {total} Asana tasks. Loading comments...")
+            console.print(f"[bold]Found {total:,} Asana tasks[/bold]")
 
-            for index, raw_task in enumerate(raw_tasks, start=1):
-                raw_task = dict(raw_task)
-                raw_task["comments"] = self._get_cached_comments(raw_task)
-                results.append(AsanaTask.from_raw_task(raw_task))
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold]Loading Asana history[/bold]"),
+                BarColumn(),
+                TaskProgressColumn(),
+                MofNCompleteColumn(),
+                TaskRateColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            )
+            with progress:
+                progress_task = progress.add_task("Loading Asana history", total=total)
+                for index, raw_task in enumerate(raw_tasks, start=1):
+                    raw_task = dict(raw_task)
+                    raw_task["comments"] = self._get_cached_comments(raw_task)
+                    results.append(AsanaTask.from_raw_task(raw_task))
+                    progress.advance(progress_task)
 
-                if index % 50 == 0 or index == total:
-                    logger.info(f"Prepared Asana tasks: {index}/{total}")
-                if index % 100 == 0:
-                    self._save_comment_cache()
+                    if index % 100 == 0:
+                        self._save_comment_cache()
 
             self._save_comment_cache()
         else:

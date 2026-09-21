@@ -1,3 +1,4 @@
+import datetime
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -13,6 +14,7 @@ from syncall.sync_side import SyncSide
 from syncall.types import AsanaGID
 
 GET_TASKS_PAGE_SIZE = 100
+COMMENT_CACHE_MAX_AGE = datetime.timedelta(days=30)
 TASK_FIELDS = [
     "completed",
     "completed_at",
@@ -190,12 +192,39 @@ class AsanaSide(SyncSide):
         if cached is not None and cached.get("modified_at") == modified_at:
             cached_comments = cached.get("comments", ())
             if cached.get("version") == 2:
-                return tuple(AsanaComment.from_raw(comment) for comment in cached_comments)
+                structured_comments = tuple(
+                    AsanaComment.from_raw(comment) for comment in cached_comments
+                )
+                if not structured_comments:
+                    return ()
+
+                checked_at = cached.get("checked_at")
+                if checked_at is None:
+                    cached["checked_at"] = datetime.datetime.now(
+                        datetime.timezone.utc,
+                    ).isoformat()
+                    self._comment_cache_dirty = True
+                    return structured_comments
+
+                try:
+                    last_checked = datetime.datetime.fromisoformat(str(checked_at))
+                except ValueError:
+                    last_checked = None
+
+                if last_checked is not None:
+                    cache_age = (
+                        datetime.datetime.now(datetime.timezone.utc) - last_checked
+                    )
+                    if cache_age < COMMENT_CACHE_MAX_AGE:
+                        return structured_comments
 
             # Legacy caches stored only comment text. Empty entries can be upgraded without
             # another API request; non-empty entries need one refresh to recover GIDs/dates.
-            if not cached_comments:
+            elif not cached_comments:
                 cached["version"] = 2
+                cached["checked_at"] = datetime.datetime.now(
+                    datetime.timezone.utc,
+                ).isoformat()
                 self._comment_cache_dirty = True
                 return ()
 
@@ -204,6 +233,7 @@ class AsanaSide(SyncSide):
             self._comment_cache[item_id] = {
                 "version": 2,
                 "modified_at": modified_at,
+                "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "comments": [comment.to_cache() for comment in comments],
             }
             self._comment_cache_dirty = True

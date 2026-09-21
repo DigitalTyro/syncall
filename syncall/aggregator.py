@@ -134,6 +134,7 @@ class Aggregator:
         self._operation_progress = None
         self._operation_progress_task = None
         self._operation_failed = False
+        self._written_serdes: set[tuple[str, ID]] = set()
         self.cleaned_up = False
 
     def __enter__(self) -> Self:
@@ -236,11 +237,11 @@ class Aggregator:
         side_A_serdes_dir, side_B_serdes_dir = self._get_serdes_dirs(self._helper_A)
         cache_items = [
             *(
-                (item_id, self._items_B[item_id], side_B_serdes_dir)
+                (self._helper_B, item_id, self._items_B[item_id], side_B_serdes_dir)
                 for item_id in changes_B.new.union(changes_B.modified)
             ),
             *(
-                (item_id, self._items_A[item_id], side_A_serdes_dir)
+                (self._helper_A, item_id, self._items_A[item_id], side_A_serdes_dir)
                 for item_id in changes_A.new.union(changes_A.modified)
             ),
         ]
@@ -251,6 +252,7 @@ class Aggregator:
             return
 
         self._operation_failed = False
+        self._written_serdes = set()
         progress = make_progress(console=console, unit="ops")
         with progress:
             self._operation_progress = progress
@@ -275,8 +277,9 @@ class Aggregator:
             progress = make_progress(console=console, unit="items")
             with progress:
                 progress_task = progress.add_task("Saving sync state", total=len(cache_items))
-                for item_id, item, serdes_dir in cache_items:
-                    pickle_dump(item, serdes_dir / item_id)
+                for helper, item_id, item, serdes_dir in cache_items:
+                    if (helper.name, item_id) not in self._written_serdes:
+                        pickle_dump(item, serdes_dir / item_id)
                     progress.advance(progress_task)
 
         self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
@@ -359,6 +362,7 @@ class Aggregator:
             # Cache both sides with pickle - f=id_
             logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
             pickle_dump(item_created, serdes_dir / item_created_id)
+            self._written_serdes.add((helper.name, item_created_id))
             self._advance_operation_progress()
             return item_created_id
         except Exception:
@@ -377,6 +381,7 @@ class Aggregator:
         try:
             side.update_item(item_id, **item)
             pickle_dump(item, serdes_dir / item_id)
+            self._written_serdes.add((helper.name, item_id))
             self._advance_operation_progress()
         except Exception:
             self._operation_failed = True

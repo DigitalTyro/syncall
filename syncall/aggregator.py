@@ -334,6 +334,13 @@ class Aggregator:
         item_created = item_side.add_item(item)
         item_created_id = str(item_created[helper.id_key])
 
+        source_tw_uuid = getattr(item, "source_tw_uuid", None)
+        if source_tw_uuid is not None:
+            _, source_side = self._get_side_instances(helper)
+            record_asana_gid = getattr(source_side, "record_asana_gid", None)
+            if callable(record_asana_gid):
+                record_asana_gid(str(source_tw_uuid), item_created_id)
+
         # Cache both sides with pickle - f=id_
         logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
         pickle_dump(item_created, serdes_dir / item_created_id)

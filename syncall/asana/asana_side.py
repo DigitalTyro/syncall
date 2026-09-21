@@ -132,10 +132,10 @@ class AsanaSide(SyncSide):
     def _add_missing_comments(self, item_id: AsanaGID, comments: Sequence[str]) -> None:
         existing = set(self._get_comments(item_id))
         for comment in comments:
-            comment = str(comment).strip()
-            if comment and comment not in existing:
-                self._client.tasks.add_comment(item_id, text=comment)
-                existing.add(comment)
+            comment_text = str(comment).strip()
+            if comment_text and comment_text not in existing:
+                self._client.tasks.add_comment(item_id, text=comment_text)
+                existing.add(comment_text)
 
     def get_item(self, item_id: AsanaGID) -> AsanaTask | None:
         """Get a single task based on the given ID."""

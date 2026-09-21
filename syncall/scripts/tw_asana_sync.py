@@ -4,7 +4,6 @@ import sys
 
 import asana
 import click
-from xdg import xdg_config_home
 from bubop import (
     check_optional_mutually_exclusive,
     check_required_mutually_exclusive,
@@ -12,6 +11,7 @@ from bubop import (
     logger,
     loguru_tqdm_sink,
 )
+from xdg import xdg_config_home
 
 from syncall.app_utils import confirm_before_proceeding, inform_about_app_extras
 

@@ -347,6 +347,88 @@ class Aggregator:
         if self._operation_progress is not None and self._operation_progress_task is not None:
             self._operation_progress.advance(self._operation_progress_task)
 
+    def _checkpoint_correspondence(
+        self,
+        source_tw_uuid: str,
+        item_created_id: str,
+    ) -> None:
+        """Persist the in-memory correspondence map and reject conflicting identity."""
+        existing_asana_id = self._B_to_A_map.get(source_tw_uuid)
+        if existing_asana_id not in (None, item_created_id):
+            raise RuntimeError(
+                f"Taskwarrior task {source_tw_uuid} is already mapped to "
+                f"Asana task {existing_asana_id}.",
+            )
+
+        self._B_to_A_map[source_tw_uuid] = item_created_id
+        self.flush_correspondences()
+
+    def _checkpoint_source_identity(
+        self,
+        item: Item,
+        helper: SideHelper,
+        item_created_id: str,
+    ) -> str | None:
+        """Checkpoint a new Asana task identity through independent durable channels."""
+        source_tw_uuid = getattr(item, "source_tw_uuid", None)
+        if source_tw_uuid is None:
+            return None
+
+        source_tw_uuid = str(source_tw_uuid)
+        _, source_side = self._get_side_instances(helper)
+        checkpoint_errors: list[Exception] = []
+        checkpoint_successes = 0
+
+        try:
+            self._checkpoint_correspondence(source_tw_uuid, item_created_id)
+        except Exception as exc:
+            checkpoint_errors.append(exc)
+        else:
+            checkpoint_successes += 1
+
+        record_asana_gid = getattr(source_side, "record_asana_gid", None)
+        if callable(record_asana_gid):
+            try:
+                record_asana_gid(source_tw_uuid, item_created_id)
+            except Exception as exc:
+                checkpoint_errors.append(exc)
+            else:
+                checkpoint_successes += 1
+
+        if checkpoint_successes:
+            return source_tw_uuid
+
+        cause = checkpoint_errors[-1] if checkpoint_errors else None
+        raise RuntimeError(
+            "Could not durably checkpoint the new Asana task identity; "
+            "refusing to create comments.",
+        ) from cause
+
+    def _run_post_create_sync(
+        self,
+        item_side: SyncSide,
+        item_created_id: str,
+        item: Item,
+    ) -> None:
+        """Run optional post-create work after identity has been checkpointed."""
+        post_create_sync = getattr(item_side, "post_create_sync", None)
+        if callable(post_create_sync):
+            post_create_sync(item_created_id, item)
+
+    def _clear_pending_comments(
+        self,
+        source_tw_uuid: str | None,
+        helper: SideHelper,
+    ) -> None:
+        """Clear the optional Taskwarrior crash-recovery marker."""
+        if source_tw_uuid is None:
+            return
+
+        _, source_side = self._get_side_instances(helper)
+        clear_pending = getattr(source_side, "clear_pending_asana_comments", None)
+        if callable(clear_pending):
+            clear_pending(source_tw_uuid)
+
     def inserter_to(self, item: Item, helper: SideHelper) -> ID:
         """Insert an item using the given side helper.
 
@@ -362,69 +444,23 @@ class Aggregator:
         try:
             item_created = item_side.add_item(item)
             item_created_id = str(item_created[helper.id_key])
+            source_tw_uuid = self._checkpoint_source_identity(
+                item,
+                helper,
+                item_created_id,
+            )
+            self._run_post_create_sync(item_side, item_created_id, item)
+            self._clear_pending_comments(source_tw_uuid, helper)
 
-            source_tw_uuid = getattr(item, "source_tw_uuid", None)  # noqa: B009
-            if source_tw_uuid is not None:
-                source_tw_uuid = str(source_tw_uuid)
-                _, source_side = self._get_side_instances(helper)
-                checkpoint_errors = []
-                checkpoint_successes = 0
-
-                try:
-                    existing_asana_id = self._B_to_A_map.get(source_tw_uuid)
-                    if existing_asana_id not in (None, item_created_id):
-                        raise RuntimeError(
-                            f"Taskwarrior task {source_tw_uuid} is already mapped to "
-                            f"Asana task {existing_asana_id}.",
-                        )
-                    self._B_to_A_map[source_tw_uuid] = item_created_id
-                    self.flush_correspondences()
-                    checkpoint_successes += 1
-                except Exception as exc:  # noqa: BLE001
-                    checkpoint_errors.append(exc)
-
-                record_asana_gid = getattr(  # noqa: B009
-                    source_side,
-                    "record_asana_gid",
-                    None,
-                )
-                if callable(record_asana_gid):
-                    try:
-                        record_asana_gid(source_tw_uuid, item_created_id)
-                        checkpoint_successes += 1
-                    except Exception as exc:  # noqa: BLE001
-                        checkpoint_errors.append(exc)
-
-                if checkpoint_successes == 0:
-                    cause = checkpoint_errors[-1] if checkpoint_errors else None
-                    raise RuntimeError(
-                        "Could not durably checkpoint the new Asana task identity; "
-                        "refusing to create comments.",
-                    ) from cause
-
-            post_create_sync = getattr(item_side, "post_create_sync", None)  # noqa: B009
-            if callable(post_create_sync):
-                post_create_sync(item_created_id, item)
-
-            if source_tw_uuid is not None:
-                _, source_side = self._get_side_instances(helper)
-                clear_pending = getattr(  # noqa: B009
-                    source_side,
-                    "clear_pending_asana_comments",
-                    None,
-                )
-                if callable(clear_pending):
-                    clear_pending(str(source_tw_uuid))
-
-            # Cache both sides with pickle - f=id_
             logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
             pickle_dump(item_created, serdes_dir / item_created_id)
             self._written_serdes.add((helper.name, item_created_id))
             self._advance_operation_progress()
-            return item_created_id
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._operation_failed = True
             raise
+
+        return item_created_id
 
     def updater_to(self, item_id: ID, item: Item, helper: SideHelper):
         """Update an item using the given side helper."""
@@ -440,14 +476,14 @@ class Aggregator:
             pickle_dump(item, serdes_dir / item_id)
             self._written_serdes.add((helper.name, item_id))
             self._advance_operation_progress()
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._operation_failed = True
             try:
                 current_target = side.get_item(item_id, use_cached=False)
                 if current_target is not None:
                     pickle_dump(current_target, serdes_dir / item_id)
                     self._written_serdes.add((helper.name, item_id))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.opt(exception=True).warning(
                     f"[{helper}] Could not checkpoint target state after a failed update.",
                 )
@@ -461,7 +497,7 @@ class Aggregator:
             side.delete_single_item(item_id)
             self._remove_serdes_files(helper=helper, ids=(item_id,))
             self._advance_operation_progress()
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._operation_failed = True
             raise
 

@@ -74,7 +74,9 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
 
     as_name = build_asana_name(tw_description, tw_item.get("client"))
     as_html_notes = markdown_to_asana_html(str(tw_item.get("notes") or ""))
-    as_comments = tuple(AsanaComment(text=str(annotation)) for annotation in tw_item.get("annotations", ()))
+    as_comments = tuple(
+        AsanaComment(text=str(annotation)) for annotation in tw_item.get("annotations", ())
+    )
 
     return AsanaTask(
         completed=as_completed,

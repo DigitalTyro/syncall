@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import sys
 
 import asana
@@ -39,6 +40,19 @@ from syncall.progress import make_progress
 from syncall.tw_asana_utils import convert_asana_to_tw, convert_tw_to_asana
 
 
+def _acquire_sync_lock():
+    """Prevent overlapping local sync processes from racing writes."""
+    lock_path = xdg_config_home() / "syncall" / "tw_asana_sync.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        error_and_exit("Another Taskwarrior ↔ Asana sync is already running.")
+    return handle
+
+
 # CLI parsing ---------------------------------------------------------------------------------
 @click.command()
 @opts_asana(hidden_gid=False)
@@ -69,6 +83,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
     loguru_tqdm_sink(verbosity=verbose)
     app_log_to_syslog()
     logger.debug("Initialising...")
+    sync_lock = _acquire_sync_lock()
     inform_about_config = False
 
     # cli validation --------------------------------------------------------------------------
@@ -249,7 +264,40 @@ def main(  # noqa: PLR0915, C901, PLR0912
             ("end", "entry", "modified", "urgency"),
         ),
     ) as aggregator:
+        existing_tw_items = tw_side.get_all_items()
+        recovered = {
+            str(item["uuid"]): str(item["asana_gid"])
+            for item in existing_tw_items
+            if item.get("asana_gid")
+        }
+        recovered_count = aggregator.recover_correspondences(recovered)
+        if recovered_count:
+            logger.info(
+                f"Recovered {recovered_count} Asana↔Taskwarrior task mapping(s) "
+                "from Taskwarrior.",
+            )
+            aggregator.flush_correspondences()
+
+        # Backfill all current mapped identities before doing any network writes. This makes
+        # the mapping reconstructable even if syncall preference/cache files are later lost.
+        backfilled = tw_side.backfill_asana_gids(
+            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},  # noqa: SLF001
+        )
+        if backfilled:
+            logger.info(f"Persisted Asana identity on {backfilled} Taskwarrior task(s).")
+
         aggregator.sync()
+        aggregator.flush_correspondences()
+
+        # Backfill any mappings created during this sync too.
+        post_sync_backfilled = tw_side.backfill_asana_gids(
+            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},  # noqa: SLF001
+        )
+        if post_sync_backfilled:
+            logger.info(
+                f"Persisted Asana identity on {post_sync_backfilled} newly mapped "
+                "Taskwarrior task(s).",
+            )
 
         # Annotation entry timestamps are not part of taskw-ng's normal annotate/update path.
         # Reconcile them separately from cached Asana story metadata so interrupted migrations
@@ -287,6 +335,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "timestamp(s) from Asana.",
             )
 
+    sync_lock.close()
     return 0
 
 

@@ -146,3 +146,41 @@ def test_ambiguous_annotation_count_is_not_guessed() -> None:
     assert repaired == 0
     assert imported == []
     tw._execute.assert_not_called()
+
+
+def test_reconcile_skips_live_export_when_annotation_dates_are_already_correct() -> None:
+    side = TaskWarriorSide.__new__(TaskWarriorSide)
+    tw = MagicMock()
+    side._tw = tw
+    side._reload_items = False
+    desired = [
+        SyncAnnotation(
+            "Historical comment",
+            source_id="story-1",
+            source_entry=datetime.datetime(
+                2024,
+                3,
+                4,
+                12,
+                34,
+                56,
+                tzinfo=datetime.timezone.utc,
+            ),
+        ),
+    ]
+    current = [
+        {
+            "entry": "20240304T123456Z",
+            "description": "Historical comment",
+        },
+    ]
+
+    repaired = side.reconcile_annotation_timestamps(
+        "44444444-4444-4444-4444-444444444444",
+        desired,
+        current_annotations=current,
+    )
+
+    assert repaired == 0
+    tw._get_json.assert_not_called()
+    tw._execute.assert_not_called()

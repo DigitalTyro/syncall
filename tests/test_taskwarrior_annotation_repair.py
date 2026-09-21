@@ -52,12 +52,12 @@ def test_annotation_timestamp_repair_updates_only_entry_values() -> None:
         SyncAnnotation(
             "First comment",
             source_id="story-1",
-            source_entry=datetime.datetime(2024, 2, 3, 10, 15, tzinfo=datetime.timezone.utc),
+            source_entry=datetime.datetime(2024, 2, 3, 10, 15, tzinfo=datetime.UTC),
         ),
         SyncAnnotation(
             "Second comment",
             source_id="story-2",
-            source_entry=datetime.datetime(2025, 6, 7, 8, 30, tzinfo=datetime.timezone.utc),
+            source_entry=datetime.datetime(2025, 6, 7, 8, 30, tzinfo=datetime.UTC),
         ),
     ]
 
@@ -102,12 +102,12 @@ def test_duplicate_annotation_text_is_paired_chronologically() -> None:
         SyncAnnotation(
             "Same text",
             source_id="later",
-            source_entry=datetime.datetime(2025, 1, 2, 12, 0, tzinfo=datetime.timezone.utc),
+            source_entry=datetime.datetime(2025, 1, 2, 12, 0, tzinfo=datetime.UTC),
         ),
         SyncAnnotation(
             "Same text",
             source_id="earlier",
-            source_entry=datetime.datetime(2024, 1, 2, 12, 0, tzinfo=datetime.timezone.utc),
+            source_entry=datetime.datetime(2024, 1, 2, 12, 0, tzinfo=datetime.UTC),
         ),
     ]
 
@@ -137,7 +137,7 @@ def test_ambiguous_annotation_count_is_not_guessed() -> None:
         SyncAnnotation(
             "Same text",
             source_id="only-one",
-            source_entry=datetime.datetime(2024, 1, 2, 12, 0, tzinfo=datetime.timezone.utc),
+            source_entry=datetime.datetime(2024, 1, 2, 12, 0, tzinfo=datetime.UTC),
         ),
     ]
 
@@ -164,7 +164,7 @@ def test_reconcile_skips_live_export_when_annotation_dates_are_already_correct()
                 12,
                 34,
                 56,
-                tzinfo=datetime.timezone.utc,
+                tzinfo=datetime.UTC,
             ),
         ),
     ]

@@ -19,6 +19,7 @@ from item_synchronizer import Synchronizer
 from item_synchronizer.helpers import SideChanges
 from item_synchronizer.resolution_strategy import AlwaysSecondRS, ResolutionStrategy
 from rich.console import Console
+from yaml import YAMLError
 
 from syncall.app_utils import app_name
 from syncall.progress import make_progress
@@ -351,8 +352,8 @@ class Aggregator:
         self,
         source_tw_uuid: str,
         item_created_id: str,
-    ) -> None:
-        """Persist the in-memory correspondence map and reject conflicting identity."""
+    ) -> bool:
+        """Persist the correspondence map, returning whether disk persistence succeeded."""
         existing_asana_id = self._B_to_A_map.get(source_tw_uuid)
         if existing_asana_id not in (None, item_created_id):
             raise RuntimeError(
@@ -361,7 +362,14 @@ class Aggregator:
             )
 
         self._B_to_A_map[source_tw_uuid] = item_created_id
-        self.flush_correspondences()
+        try:
+            self.flush_correspondences()
+        except (OSError, YAMLError):
+            logger.opt(exception=True).warning(
+                "Could not persist the Asana↔Taskwarrior correspondence map.",
+            )
+            return False
+        return True
 
     def _checkpoint_source_identity(
         self,
@@ -376,33 +384,21 @@ class Aggregator:
 
         source_tw_uuid = str(source_tw_uuid)
         _, source_side = self._get_side_instances(helper)
-        checkpoint_errors: list[Exception] = []
-        checkpoint_successes = 0
-
-        try:
-            self._checkpoint_correspondence(source_tw_uuid, item_created_id)
-        except Exception as exc:
-            checkpoint_errors.append(exc)
-        else:
-            checkpoint_successes += 1
+        checkpoint_successes = int(
+            self._checkpoint_correspondence(source_tw_uuid, item_created_id),
+        )
 
         record_asana_gid = getattr(source_side, "record_asana_gid", None)
-        if callable(record_asana_gid):
-            try:
-                record_asana_gid(source_tw_uuid, item_created_id)
-            except Exception as exc:
-                checkpoint_errors.append(exc)
-            else:
-                checkpoint_successes += 1
+        if callable(record_asana_gid) and record_asana_gid(source_tw_uuid, item_created_id):
+            checkpoint_successes += 1
 
         if checkpoint_successes:
             return source_tw_uuid
 
-        cause = checkpoint_errors[-1] if checkpoint_errors else None
         raise RuntimeError(
             "Could not durably checkpoint the new Asana task identity; "
             "refusing to create comments.",
-        ) from cause
+        )
 
     def _run_post_create_sync(
         self,
@@ -483,7 +479,9 @@ class Aggregator:
                 if current_target is not None:
                     pickle_dump(current_target, serdes_dir / item_id)
                     self._written_serdes.add((helper.name, item_id))
-            except Exception:
+            except Exception:  # noqa: BLE001
+                # This checkpoint is best-effort after an existing sync failure; never let a
+                # secondary connector/cache error mask the original exception being re-raised.
                 logger.opt(exception=True).warning(
                     f"[{helper}] Could not checkpoint target state after a failed update.",
                 )

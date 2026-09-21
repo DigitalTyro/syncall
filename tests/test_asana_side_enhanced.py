@@ -309,3 +309,34 @@ def test_comment_metadata_does_not_create_false_sync_change() -> None:
 
     structured.comments = (AsanaComment(text="Changed comment"),)
     assert not AsanaSide.items_are_identical(legacy, structured)
+
+
+def test_structured_comment_cache_periodically_refreshes_edited_comments(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"version":2,"modified_at":"2026-09-20T12:30:00Z",'
+        '"checked_at":"2020-01-01T00:00:00+00:00","comments":['
+        '{"gid":"story-1","text":"Old text","created_at":"2025-01-02T10:30:00+00:00"}]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {
+            "created_at": "2025-01-02T10:30:00Z",
+            "gid": "story-1",
+            "type": "comment",
+            "text": "Edited text",
+        },
+    ]
+
+    tasks = side.get_all_items()
+
+    assert [str(comment) for comment in tasks[0].comments] == ["Edited text"]
+    client.tasks.stories.assert_called_once()

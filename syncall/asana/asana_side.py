@@ -321,9 +321,8 @@ class AsanaSide(SyncSide):
         self._add_missing_comments(item_id, desired_comments)
 
     def add_item(self, item: AsanaTask) -> AsanaTask:
-        """Add a new task, then append Taskwarrior annotations as comments."""
+        """Create a task without comments so identity can be checkpointed first."""
         raw_task = item.to_raw_task()
-        desired_comments = item.comments
 
         if "assignee" not in raw_task:
             raw_task["assignee"] = "me"
@@ -338,12 +337,15 @@ class AsanaSide(SyncSide):
 
         created = self._client.tasks.create_task(raw_task)
         item_id = created["gid"]
-        self._add_missing_comments(item_id, desired_comments)
 
         refreshed = self.get_item(item_id)
         if refreshed is None:
             raise RuntimeError(f"Failed to retrieve newly created Asana task {item_id}.")
         return refreshed
+
+    def post_create_sync(self, item_id: AsanaGID, item: AsanaTask) -> None:
+        """Apply comments only after the caller has checkpointed task identity."""
+        self._add_missing_comments(item_id, item.comments)
 
     @classmethod
     def id_key(cls) -> str:

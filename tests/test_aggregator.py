@@ -53,7 +53,6 @@ class MockSide(SyncSide):
         raise NotImplementedError("Implement in derived")
 
 
-
 def test_missing_filtered_item_that_still_exists_is_not_deleted(tmp_path) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper = MagicMock()

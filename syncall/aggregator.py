@@ -440,7 +440,7 @@ class Aggregator:
             pickle_dump(item, serdes_dir / item_id)
             self._written_serdes.add((helper.name, item_id))
             self._advance_operation_progress()
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._operation_failed = True
             try:
                 current_target = side.get_item(item_id, use_cached=False)
@@ -461,7 +461,7 @@ class Aggregator:
             side.delete_single_item(item_id)
             self._remove_serdes_files(helper=helper, ids=(item_id,))
             self._advance_operation_progress()
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._operation_failed = True
             raise
 

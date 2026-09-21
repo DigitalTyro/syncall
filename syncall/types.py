@@ -8,7 +8,7 @@ from item_synchronizer.types import ID
 
 # ---------------------------------------------------------------------------------------------
 # Taskwarrior
-class SyncAnnotation(str):
+class SyncAnnotation(str):  # noqa: SLOT000
     """Annotation text plus source metadata used during synchronization."""
 
     source_id: str | None

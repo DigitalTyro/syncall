@@ -249,6 +249,38 @@ def main(  # noqa: PLR0915, C901, PLR0912
     ) as aggregator:
         aggregator.sync()
 
+        # Annotation entry timestamps are not part of taskw-ng's normal annotate/update path.
+        # Reconcile them separately from cached Asana story metadata so interrupted migrations
+        # are safe to resume and future runs become cheap no-ops once dates are correct.
+        current_tw_items = {
+            str(item["uuid"]): item for item in tw_side.get_all_items()
+        }
+        repaired_annotations = 0
+        for tw_id, asana_id in tuple(aggregator._B_to_A_map.items()):  # noqa: SLF001
+            asana_item = aggregator._items_A.get(str(asana_id))  # noqa: SLF001
+            if asana_item is None:
+                continue
+
+            desired_tw_item = convert_asana_to_tw(asana_item)
+            if desired_tw_item is None:
+                continue
+
+            current_tw_item = current_tw_items.get(str(tw_id))
+            current_annotations = (
+                current_tw_item.get("annotations", ()) if current_tw_item is not None else None
+            )
+            repaired_annotations += tw_side.reconcile_annotation_timestamps(
+                str(tw_id),
+                desired_tw_item.get("annotations", ()),
+                current_annotations=current_annotations,
+            )
+
+        if repaired_annotations:
+            logger.info(
+                f"Repaired {repaired_annotations} historical Taskwarrior annotation "
+                "timestamp(s) from Asana.",
+            )
+
     return 0
 
 

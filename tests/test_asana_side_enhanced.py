@@ -467,3 +467,91 @@ def test_post_create_sync_adds_comments_after_task_identity_exists() -> None:
         "new-task",
         text="Comment after checkpoint",
     )
+
+
+def test_structured_comment_cache_without_checked_at_refreshes_once(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"version":2,"modified_at":"2026-09-20T12:30:00Z","comments":['
+        '{"gid":"story-1","text":"Old text","created_at":"2025-01-02T10:30:00+00:00"}]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {
+            "created_at": "2025-01-02T10:30:00Z",
+            "gid": "story-1",
+            "type": "comment",
+            "text": "Edited text",
+        },
+    ]
+
+    tasks = side.get_all_items()
+
+    assert [str(comment) for comment in tasks[0].comments] == ["Edited text"]
+    client.tasks.stories.assert_called_once()
+
+
+def test_changed_task_modified_at_invalidates_fresh_comment_cache(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"version":2,"modified_at":"2026-09-19T12:30:00Z",'
+        '"checked_at":"2026-09-21T12:00:00+00:00","comments":['
+        '{"gid":"story-1","text":"Old text","created_at":"2025-01-02T10:30:00+00:00"}]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {
+            "created_at": "2025-01-02T10:30:00Z",
+            "gid": "story-1",
+            "type": "comment",
+            "text": "Current text",
+        },
+    ]
+
+    tasks = side.get_all_items()
+
+    assert [str(comment) for comment in tasks[0].comments] == ["Current text"]
+    client.tasks.stories.assert_called_once()
+
+
+def test_corrupt_comment_cache_is_rebuilt_from_asana(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text("{not valid json")
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {
+            "created_at": "2025-01-02T10:30:00Z",
+            "gid": "story-1",
+            "type": "comment",
+            "text": "Recovered",
+        },
+    ]
+
+    tasks = side.get_all_items()
+
+    assert [str(comment) for comment in tasks[0].comments] == ["Recovered"]
+    client.tasks.stories.assert_called_once()

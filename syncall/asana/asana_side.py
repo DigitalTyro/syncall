@@ -5,22 +5,10 @@ from pathlib import Path
 import asana
 from bubop import logger
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    ProgressColumn,
-    SpinnerColumn,
-    Task,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
-from rich.text import Text
 
 from syncall.asana.asana_task import AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown
+from syncall.progress import make_progress
 from syncall.sync_side import SyncSide
 from syncall.types import AsanaGID
 
@@ -37,17 +25,6 @@ TASK_FIELDS = [
     "name",
 ]
 STORY_FIELDS = ["gid", "resource_subtype", "text", "type"]
-
-
-class TaskRateColumn(ProgressColumn):
-    """Display processing throughput for task progress."""
-
-    def render(self, task: Task) -> Text:
-        speed = task.speed
-        if speed is None:
-            return Text("-- tasks/s")
-        return Text(f"{speed:.1f} tasks/s")
-
 
 class AsanaSide(SyncSide):
     """Wrapper class to add/modify/delete Asana tasks."""
@@ -167,17 +144,7 @@ class AsanaSide(SyncSide):
             total = len(raw_tasks)
             console.print(f"[bold]Found {total:,} Asana tasks[/bold]")
 
-            progress = Progress(
-                SpinnerColumn(),
-                TextColumn("[bold]Loading Asana history[/bold]"),
-                BarColumn(),
-                TaskProgressColumn(),
-                MofNCompleteColumn(),
-                TaskRateColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-                console=console,
-            )
+            progress = make_progress(console=console, unit="tasks")
             with progress:
                 progress_task = progress.add_task("Loading Asana history", total=total)
                 for index, discovered_task in enumerate(raw_tasks, start=1):

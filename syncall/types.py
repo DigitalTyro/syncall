@@ -8,6 +8,22 @@ from item_synchronizer.types import ID
 
 # ---------------------------------------------------------------------------------------------
 # Taskwarrior
+class SyncAnnotation(str):
+    """Annotation text plus source metadata used during synchronization."""
+
+    def __new__(
+        cls,
+        description: str,
+        *,
+        source_id: str | None = None,
+        source_entry: datetime.datetime | None = None,
+    ):
+        value = str.__new__(cls, description)
+        value.source_id = source_id
+        value.source_entry = source_entry
+        return value
+
+
 class TaskwarriorRawItem(TypedDict, total=False):
     """Dictionary part of an item as returned from the Taskw Python API on tw.get_task(id=...).
 

@@ -25,6 +25,7 @@ tw_duration_key = "syncallduration"
 tw_client_key = "client"
 tw_notes_key = "notes"
 tw_asana_gid_key = "asana_gid"
+tw_asana_pending_comments_key = "asana_pending_comments"
 
 OrderByType = Literal[
     "description",
@@ -43,6 +44,10 @@ TW_CONFIG_DEFAULT_OVERRIDES = {
         tw_client_key: {"type": "string", "label": "Client"},
         tw_notes_key: {"type": "string", "label": "Notes"},
         tw_asana_gid_key: {"type": "string", "label": "Asana GID"},
+        tw_asana_pending_comments_key: {
+            "type": "string",
+            "label": "Asana Pending Comments",
+        },
     },
 }
 
@@ -386,15 +391,29 @@ class TaskWarriorSide(SyncSide):
         return cast("ItemType", new_item)
 
     def record_asana_gid(self, item_id: str, asana_gid: str) -> None:
-        """Persist an Asana GID on a Taskwarrior task immediately."""
+        """Persist Asana identity and a crash-recovery marker immediately."""
         self._tw._execute(  # noqa: SLF001
             str(item_id),
             "modify",
             f"{tw_asana_gid_key}:{asana_gid}",
+            f"{tw_asana_pending_comments_key}:1",
         )
         cached = self._items_cache.get(str(item_id))
         if cached is not None:
             cached[tw_asana_gid_key] = str(asana_gid)  # type: ignore[literal-required]
+            cached[tw_asana_pending_comments_key] = "1"  # type: ignore[literal-required]
+        self._reload_items = True
+
+    def clear_pending_asana_comments(self, item_id: str) -> None:
+        """Clear the recovery marker after all outbound comments are confirmed remote."""
+        self._tw._execute(  # noqa: SLF001
+            str(item_id),
+            "modify",
+            f"{tw_asana_pending_comments_key}:",
+        )
+        cached = self._items_cache.get(str(item_id))
+        if cached is not None:
+            cached.pop(tw_asana_pending_comments_key, None)
         self._reload_items = True
 
     def backfill_asana_gids(self, mapping: Mapping[str, str]) -> int:

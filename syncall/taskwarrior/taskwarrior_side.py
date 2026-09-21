@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 tw_duration_key = "syncallduration"
 tw_client_key = "client"
 tw_notes_key = "notes"
+tw_asana_gid_key = "asana_gid"
 
 OrderByType = Literal[
     "description",
@@ -41,6 +42,7 @@ TW_CONFIG_DEFAULT_OVERRIDES = {
         tw_duration_key: {"type": "duration", "label": "Syncall Duration"},
         tw_client_key: {"type": "string", "label": "Client"},
         tw_notes_key: {"type": "string", "label": "Notes"},
+        tw_asana_gid_key: {"type": "string", "label": "Asana GID"},
     },
 }
 
@@ -131,16 +133,19 @@ class TaskWarriorSide(SyncSide):
     def start(self):
         logger.info(f"Initializing {self.fullname}...")
 
+    def _filter_string(self) -> str:
+        filter_parts = [*[f"+{tag}" for tag in self._tags]]
+        if self._tw_filter:
+            filter_parts.append(self._tw_filter)
+        if self._project:
+            filter_parts.append(f"pro:{self._project}")
+        return f"( {' and '.join(filter_parts)} )"
+
     def _load_all_items(self):
         """Load all tasks to memory."""
         if not self._reload_items:
             return
-        filter_ = [*[f"+{tag}" for tag in self._tags]]
-        if self._tw_filter:
-            filter_.append(self._tw_filter)
-        if self._project:
-            filter_.append(f"pro:{self._project}")
-        filter_ = f"( {' and '.join(filter_)} )"
+        filter_ = self._filter_string()
         logger.debug(f"Using the following filter to fetch TW tasks: {filter_}")
         tasks = self._tw.load_tasks_and_filter(command="all", filter_=filter_)
 
@@ -379,6 +384,39 @@ class TaskWarriorSide(SyncSide):
             self._tw.task_delete(id=new_id)
 
         return cast("ItemType", new_item)
+
+    def backfill_asana_gids(self, mapping: Mapping[str, str]) -> int:
+        """Persist Asana task identity inside Taskwarrior so mappings are recoverable."""
+        if not mapping:
+            return 0
+
+        raw_tasks = self._tw._get_json(self._filter_string(), "export")  # noqa: SLF001
+        if isinstance(raw_tasks, dict):
+            raw_tasks = [raw_tasks]
+
+        changed = []
+        for raw_task in raw_tasks:
+            task_uuid = str(raw_task.get("uuid") or "")
+            asana_gid = mapping.get(task_uuid)
+            if asana_gid is None or str(raw_task.get(tw_asana_gid_key) or "") == str(asana_gid):
+                continue
+            raw_task[tw_asana_gid_key] = str(asana_gid)
+            raw_task.pop("id", None)
+            raw_task.pop("urgency", None)
+            changed.append(raw_task)
+
+        if not changed:
+            return 0
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as handle:
+            for raw_task in changed:
+                json.dump(raw_task, handle, ensure_ascii=False)
+                handle.write("\n")
+            handle.flush()
+            self._tw._execute("import", handle.name)  # noqa: SLF001
+
+        self._reload_items = True
+        return len(changed)
 
     def delete_single_item(self, item_id) -> None:
         self._tw.task_delete(uuid=item_id)

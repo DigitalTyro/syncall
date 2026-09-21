@@ -172,8 +172,9 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     target_side.add_item.return_value = created
     events: list[str] = []
 
-    def record_identity(*_args) -> None:
+    def record_identity(*_args) -> bool:
         events.append("identity")
+        return True
 
     def record_comments(*_args) -> None:
         events.append("comments")
@@ -184,7 +185,7 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     def record_prefs() -> None:
         events.append("prefs")
 
-    source_side.record_asana_gid.side_effect = lambda *_: (record_identity(), True)[1]
+    source_side.record_asana_gid.side_effect = record_identity
     target_side.post_create_sync.side_effect = record_comments
     source_side.clear_pending_asana_comments.side_effect = record_clear
     item = MagicMock()
@@ -386,13 +387,13 @@ def test_new_asana_task_refuses_comments_if_identity_cannot_be_checkpointed(tmp_
     target_side = MagicMock()
     source_side = MagicMock()
     target_side.add_item.return_value = {"gid": "asana-new", "name": "Created"}
-    source_side.record_asana_gid.side_effect = RuntimeError("Taskwarrior write failed")
+    source_side.record_asana_gid.return_value = False
     item = MagicMock()
     item.source_tw_uuid = "tw-source"
 
     aggregator._B_to_A_map = bidict()
     aggregator.flush_correspondences = MagicMock(
-        side_effect=RuntimeError("Preferences write failed"),
+        side_effect=OSError("Preferences write failed"),
     )
     aggregator._get_side_instances = MagicMock(
         return_value=(target_side, source_side),

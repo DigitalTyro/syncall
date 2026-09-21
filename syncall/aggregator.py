@@ -359,6 +359,12 @@ class Aggregator:
             if callable(post_create_sync):
                 post_create_sync(item_created_id, item)
 
+            if source_tw_uuid is not None:
+                _, source_side = self._get_side_instances(helper)
+                clear_pending = getattr(source_side, "clear_pending_asana_comments", None)
+                if callable(clear_pending):
+                    clear_pending(str(source_tw_uuid))
+
             # Cache both sides with pickle - f=id_
             logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
             pickle_dump(item_created, serdes_dir / item_created_id)

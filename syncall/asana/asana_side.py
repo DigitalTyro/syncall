@@ -268,8 +268,13 @@ class AsanaSide(SyncSide):
             self._client.tasks.add_comment(item_id, text=comment_text)
             existing.add(comment_key)
 
-    def get_item(self, item_id: AsanaGID) -> AsanaTask | None:
+    def get_item(
+        self,
+        item_id: AsanaGID,
+        use_cached: bool = False,
+    ) -> AsanaTask | None:
         """Get a single task based on the given ID."""
+        del use_cached
         try:
             raw_task = self._client.tasks.find_by_id(item_id, fields=TASK_FIELDS)
             raw_task["comments"] = self._get_cached_comments(raw_task)

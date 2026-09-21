@@ -199,14 +199,14 @@ class Aggregator:
         """Entrypoint method."""
         console = Console()
 
-        with console.status("[bold]Loading Asana snapshot...[/bold]", spinner="dots"):
-            self._items_A = {
-                str(item[self._helper_A.id_key]): item for item in self._side_A.get_all_items()
-            }
+        self._items_A = {
+            str(item[self._helper_A.id_key]): item for item in self._side_A.get_all_items()
+        }
         with console.status("[bold]Loading Taskwarrior snapshot...[/bold]", spinner="dots"):
             self._items_B = {
                 str(item[self._helper_B.id_key]): item for item in self._side_B.get_all_items()
             }
+        console.print(f"[bold]Found {len(self._items_B):,} Taskwarrior tasks in sync scope[/bold]")
 
         with console.status("[bold]Detecting changes...[/bold]", spinner="dots"):
             changes_A = self.detect_changes(self._helper_A, self._items_A)
@@ -266,7 +266,9 @@ class Aggregator:
         touched_A = changes_A.modified.union(changes_A.deleted)
         touched_B = changes_B.modified.union(changes_B.deleted)
         mapped_touched_A_in_B = {
-            self._B_to_A[item_id] for item_id in touched_A if item_id in self._B_to_A
+            self._B_to_A_map.inverse[item_id]
+            for item_id in touched_A
+            if item_id in self._B_to_A_map.inverse
         }
         conflicts = touched_B.intersection(mapped_touched_A_in_B)
         touched_operations = len(touched_A) + len(touched_B) - len(conflicts)

@@ -161,7 +161,6 @@ class TestTwAsanaConversions(GenericTestCase):
         assert annotation.source_id == "story-123"
         assert annotation.source_entry.isoformat() == "2024-03-04T12:34:56+00:00"
 
-
     def test_asana_gid_is_embedded_in_taskwarrior_conversion(self):
         self.load_sample_items()
         asana_task = dict(self.asana_task)

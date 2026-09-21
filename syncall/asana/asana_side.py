@@ -227,15 +227,14 @@ class AsanaSide(SyncSide):
         item2: AsanaTask,
         ignore_keys: Sequence[str] = [],
     ) -> bool:
-        compare_keys = AsanaTask._key_names.copy()
+        compare_keys = set(AsanaTask._key_names)
 
         for key in ignore_keys:
-            if key in compare_keys:
-                compare_keys.remove(key)
+            compare_keys.discard(key)
 
         if item1.get("due_at", None) is not None and item2.get("due_at", None) is not None:
-            compare_keys.remove("due_on")
+            compare_keys.discard("due_on")
         elif item1.get("due_on", None) is not None and item2.get("due_on", None) is not None:
-            compare_keys.remove("due_at")
+            compare_keys.discard("due_at")
 
         return SyncSide._items_are_identical(item1, item2, compare_keys)

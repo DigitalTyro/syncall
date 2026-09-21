@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(dirname "$SCRIPT_DIR")
+
+if [ ! -f "$REPO_DIR/.env" ]; then
+    echo "Missing $REPO_DIR/.env" >&2
+    exit 1
+fi
+
+set -a
+. "$REPO_DIR/.env"
+set +a
+
+exec "$REPO_DIR/.venv/bin/tw_asana_sync" --combination work "$@"

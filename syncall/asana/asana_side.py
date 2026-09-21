@@ -64,7 +64,7 @@ class AsanaSide(SyncSide):
             if not isinstance(cache, dict):
                 raise ValueError("Comment cache root must be an object.")
             return cache
-        except (OSError, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError):
             logger.warning(
                 f"Could not read Asana comment cache at {self._comment_cache_path}; rebuilding it.",
             )

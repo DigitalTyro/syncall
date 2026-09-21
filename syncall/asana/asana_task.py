@@ -11,9 +11,49 @@ if TYPE_CHECKING:
     from syncall.types import AsanaGID, AsanaRawTask
 
 
+@dataclass(frozen=True)
+class AsanaComment:
+    """Represent an Asana comment story with stable identity and creation time."""
+
+    text: str
+    gid: AsanaGID | None = None
+    created_at: datetime.datetime | None = None
+
+    def __str__(self) -> str:
+        return self.text
+
+    @classmethod
+    def from_raw(cls, raw_comment: Any) -> AsanaComment:
+        if isinstance(raw_comment, cls):
+            return raw_comment
+
+        if isinstance(raw_comment, Mapping):
+            created_at = raw_comment.get("created_at")
+            if created_at is not None and not isinstance(created_at, datetime.datetime):
+                created_at = parse_datetime(created_at)
+            return cls(
+                text=str(raw_comment.get("text") or raw_comment.get("description") or ""),
+                gid=raw_comment.get("gid"),
+                created_at=created_at,
+            )
+
+        return cls(text=str(raw_comment))
+
+    def to_cache(self) -> dict[str, str | None]:
+        return {
+            "gid": str(self.gid) if self.gid is not None else None,
+            "text": self.text,
+            "created_at": (
+                self.created_at.isoformat(timespec="milliseconds")
+                if self.created_at is not None
+                else None
+            ),
+        }
+
+
 @dataclass
 class AsanaTask(Mapping):
-    """Represent an Asana task plus syncable comment text."""
+    """Represent an Asana task plus syncable comment stories."""
 
     completed: bool
     completed_at: datetime.datetime | None
@@ -23,7 +63,7 @@ class AsanaTask(Mapping):
     name: str
     modified_at: datetime.datetime | None
     html_notes: str = "<body></body>"
-    comments: tuple[str, ...] = ()
+    comments: tuple[AsanaComment, ...] = ()
     gid: AsanaGID | None = None
 
     _required_key_names: frozenset[str] = frozenset(
@@ -77,7 +117,7 @@ class AsanaTask(Mapping):
         html_notes = raw_task.get("html_notes") or "<body></body>"
 
         comments_raw = raw_task.get("comments", ())
-        comments = tuple(str(comment) for comment in comments_raw)
+        comments = tuple(AsanaComment.from_raw(comment) for comment in comments_raw)
 
         return AsanaTask(
             completed=completed,

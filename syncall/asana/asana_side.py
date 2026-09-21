@@ -209,7 +209,11 @@ class AsanaSide(SyncSide):
             self._comment_cache_dirty = True
         return comments
 
-    def _add_missing_comments(self, item_id: AsanaGID, comments: Sequence[str]) -> None:
+    def _add_missing_comments(
+        self,
+        item_id: AsanaGID,
+        comments: Sequence[str | AsanaComment],
+    ) -> None:
         existing = {comment.text for comment in self._get_comments(item_id)}
         for comment in comments:
             comment_text = str(comment).strip()

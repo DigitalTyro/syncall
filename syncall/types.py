@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Literal, Protocol, Self, TypedDict
 
 from item_synchronizer.types import ID
 
@@ -11,14 +11,17 @@ from item_synchronizer.types import ID
 class SyncAnnotation(str):
     """Annotation text plus source metadata used during synchronization."""
 
+    source_id: str | None
+    source_entry: datetime.datetime | None
+
     def __new__(
         cls,
         description: str,
         *,
         source_id: str | None = None,
         source_entry: datetime.datetime | None = None,
-    ):
-        value = str.__new__(cls, description)
+    ) -> Self:
+        value = super().__new__(cls, description)
         value.source_id = source_id
         value.source_entry = source_entry
         return value
@@ -323,7 +326,7 @@ class AsanaRawTask(TypedDict):
     name: str
     modified_at: str
     html_notes: str
-    comments: list[str] | tuple[str, ...]
+    comments: list[Any] | tuple[Any, ...]
 
 
 # Extras --------------------------------------------------------------------------------------

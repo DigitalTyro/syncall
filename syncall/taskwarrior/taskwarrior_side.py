@@ -190,7 +190,7 @@ class TaskWarriorSide(SyncSide):
         return item if item["status"] != "deleted" else None  # type: ignore
 
     @staticmethod
-    def _annotation_source_entry(annotation: Any) -> datetime.datetime | None:
+    def _annotation_source_entry(annotation: object) -> datetime.datetime | None:
         source_entry = getattr(annotation, "source_entry", None)
         if source_entry is None:
             return None
@@ -199,15 +199,60 @@ class TaskWarriorSide(SyncSide):
     @staticmethod
     def _format_tw_datetime(value: datetime.datetime) -> str:
         if value.tzinfo is None:
-            value = value.replace(tzinfo=datetime.timezone.utc)
-        return value.astimezone(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            value = value.replace(tzinfo=datetime.UTC)
+        return value.astimezone(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+    def _desired_annotation_entries(
+        self,
+        annotations: Sequence[object],
+    ) -> dict[str, list[str]]:
+        desired_by_text: dict[str, list[str]] = {}
+        for annotation in annotations:
+            source_entry = self._annotation_source_entry(annotation)
+            if source_entry is None:
+                continue
+            desired_by_text.setdefault(str(annotation), []).append(
+                self._format_tw_datetime(source_entry),
+            )
+        return desired_by_text
+
+    def _current_annotation_entries(
+        self,
+        annotations: Sequence[object],
+    ) -> dict[str, list[str]]:
+        current_by_text: dict[str, list[str]] = {}
+        for annotation in annotations:
+            if isinstance(annotation, dict):
+                text = str(annotation.get("description") or "")
+                entry = annotation.get("entry")
+            else:
+                text = str(annotation)
+                entry = getattr(annotation, "entry", None)
+            if entry is None:
+                continue
+            current_by_text.setdefault(text, []).append(
+                self._format_tw_datetime(parse_datetime_(entry)),
+            )
+        return current_by_text
+
+    def _annotation_timestamps_match(
+        self,
+        desired_annotations: Sequence[object],
+        current_annotations: Sequence[object],
+    ) -> bool:
+        desired_by_text = self._desired_annotation_entries(desired_annotations)
+        current_by_text = self._current_annotation_entries(current_annotations)
+        return all(
+            sorted(current_by_text.get(text, ())) == sorted(desired_entries)
+            for text, desired_entries in desired_by_text.items()
+        )
 
     def reconcile_annotation_timestamps(
         self,
         item_id: str,
-        desired_annotations: Sequence[Any],
+        desired_annotations: Sequence[object],
         *,
-        current_annotations: Sequence[Any] | None = None,
+        current_annotations: Sequence[object] | None = None,
     ) -> int:
         """Repair source-backed annotation dates only when the current dates differ."""
         desired_with_dates = [
@@ -218,114 +263,112 @@ class TaskWarriorSide(SyncSide):
         if not desired_with_dates:
             return 0
 
-        if current_annotations is not None:
-            desired_by_text: dict[str, list[str]] = {}
-            current_by_text: dict[str, list[str]] = {}
+        if current_annotations is not None and self._annotation_timestamps_match(
+            desired_with_dates,
+            current_annotations,
+        ):
+            return 0
 
-            for annotation in desired_with_dates:
-                source_entry = self._annotation_source_entry(annotation)
-                if source_entry is not None:
-                    desired_by_text.setdefault(str(annotation), []).append(
-                        self._format_tw_datetime(source_entry),
-                    )
+        return self._repair_annotation_timestamps(item_id, desired_with_dates)
 
-            for annotation in current_annotations:
-                if isinstance(annotation, dict):
-                    text = str(annotation.get("description") or "")
-                    entry = annotation.get("entry")
-                else:
-                    text = str(annotation)
-                    entry = getattr(annotation, "entry", None)
-                if entry is None:
-                    continue
-                current_by_text.setdefault(text, []).append(
-                    self._format_tw_datetime(parse_datetime_(entry)),
-                )
+    def _load_exported_task(self, item_id: str) -> dict[str, Any] | None:
+        raw_export = self._tw._get_json(item_id, "export")
+        if isinstance(raw_export, list):
+            return raw_export[0] if raw_export else None
+        return raw_export
 
-            already_correct = True
-            for text, desired_entries in desired_by_text.items():
-                if sorted(current_by_text.get(text, ())) != sorted(desired_entries):
-                    already_correct = False
-                    break
-            if already_correct:
-                return 0
+    def _group_desired_annotations(
+        self,
+        annotations: Sequence[object],
+    ) -> dict[str, list[object]]:
+        grouped: dict[str, list[object]] = {}
+        for annotation in annotations:
+            grouped.setdefault(str(annotation), []).append(annotation)
+        return grouped
 
-        return self._repair_annotation_timestamps(item_id, desired_annotations)
+    @staticmethod
+    def _group_current_annotations(
+        annotations: Sequence[object],
+    ) -> dict[str, list[tuple[int, dict[str, Any]]]]:
+        grouped: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for index, annotation in enumerate(annotations):
+            if not isinstance(annotation, dict):
+                continue
+            text = str(annotation.get("description") or "")
+            grouped.setdefault(text, []).append((index, annotation))
+        return grouped
+
+    def _repair_annotation_group(
+        self,
+        *,
+        item_id: str,
+        text: str,
+        desired_group: list[object],
+        current_group: list[tuple[int, dict[str, Any]]],
+        current_annotations: list[object],
+    ) -> int:
+        if len(current_group) != len(desired_group):
+            logger.warning(
+                f"Skipping ambiguous annotation timestamp repair for Taskwarrior task "
+                f"{item_id}: {text!r} occurs {len(current_group)} time(s) locally and "
+                f"{len(desired_group)} time(s) in Asana.",
+            )
+            return 0
+
+        desired_group.sort(
+            key=lambda annotation: self._annotation_source_entry(annotation)
+            or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+        )
+        current_group.sort(
+            key=lambda pair: parse_datetime_(pair[1]["entry"])
+            if pair[1].get("entry")
+            else datetime.datetime.min.replace(tzinfo=datetime.UTC),
+        )
+
+        repaired = 0
+        for (index, current), desired_annotation in zip(
+            current_group,
+            desired_group,
+            strict=True,
+        ):
+            source_entry = self._annotation_source_entry(desired_annotation)
+            if source_entry is None:
+                continue
+            expected_entry = self._format_tw_datetime(source_entry)
+            if current.get("entry") == expected_entry:
+                continue
+            current_annotations[index] = {
+                **current,
+                "entry": expected_entry,
+            }
+            repaired += 1
+        return repaired
 
     def _repair_annotation_timestamps(
         self,
         item_id: str,
-        desired_annotations: Sequence[Any],
+        desired_annotations: Sequence[object],
     ) -> int:
-        desired = [
-            annotation
-            for annotation in desired_annotations
-            if self._annotation_source_entry(annotation) is not None
-        ]
-        if not desired:
+        raw_task = self._load_exported_task(item_id)
+        if raw_task is None:
             return 0
 
-        raw_export = self._tw._get_json(item_id, "export")  # noqa: SLF001
-        if isinstance(raw_export, list):
-            if not raw_export:
-                return 0
-            raw_task = raw_export[0]
-        else:
-            raw_task = raw_export
-
-        current_annotations = raw_task.get("annotations", ())
+        current_annotations = list(raw_task.get("annotations", ()))
         if not current_annotations:
             return 0
 
-        desired_by_text: dict[str, list[Any]] = {}
-        current_by_text: dict[str, list[tuple[int, dict[str, Any]]]] = {}
-        for annotation in desired:
-            desired_by_text.setdefault(str(annotation), []).append(annotation)
-        for index, annotation in enumerate(current_annotations):
-            if not isinstance(annotation, dict):
-                continue
-            current_by_text.setdefault(str(annotation.get("description") or ""), []).append(
-                (index, annotation),
+        desired_by_text = self._group_desired_annotations(desired_annotations)
+        current_by_text = self._group_current_annotations(current_annotations)
+        repaired = sum(
+            self._repair_annotation_group(
+                item_id=item_id,
+                text=text,
+                desired_group=desired_group,
+                current_group=current_by_text.get(text, []),
+                current_annotations=current_annotations,
             )
-
-        repaired = 0
-        for text, desired_group in desired_by_text.items():
-            current_group = current_by_text.get(text, [])
-            if len(current_group) != len(desired_group):
-                logger.warning(
-                    f"Skipping ambiguous annotation timestamp repair for Taskwarrior task "
-                    f"{item_id}: {text!r} occurs {len(current_group)} time(s) locally and "
-                    f"{len(desired_group)} time(s) in Asana.",
-                )
-                continue
-
-            desired_group.sort(
-                key=lambda annotation: self._annotation_source_entry(annotation)
-                or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
-            )
-            current_group.sort(
-                key=lambda pair: parse_datetime_(pair[1]["entry"])
-                if pair[1].get("entry")
-                else datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
-            )
-
-            for (index, current), desired_annotation in zip(
-                current_group,
-                desired_group,
-                strict=True,
-            ):
-                source_entry = self._annotation_source_entry(desired_annotation)
-                if source_entry is None:
-                    continue
-                expected_entry = self._format_tw_datetime(source_entry)
-                if current.get("entry") == expected_entry:
-                    continue
-                current_annotations[index] = {
-                    **current,
-                    "entry": expected_entry,
-                }
-                repaired += 1
-
+            for text, desired_group in desired_by_text.items()
+        )
         if repaired == 0:
             return 0
 
@@ -337,7 +380,7 @@ class TaskWarriorSide(SyncSide):
             json.dump(raw_task, handle, ensure_ascii=False)
             handle.write("\n")
             handle.flush()
-            self._tw._execute("import", handle.name)  # noqa: SLF001
+            self._tw._execute("import", handle.name)
 
         self._reload_items = True
         logger.debug(
@@ -392,7 +435,7 @@ class TaskWarriorSide(SyncSide):
 
     def record_asana_gid(self, item_id: str, asana_gid: str) -> None:
         """Persist Asana identity and a crash-recovery marker immediately."""
-        self._tw._execute(  # noqa: SLF001
+        self._tw._execute(
             str(item_id),
             "modify",
             f"{tw_asana_gid_key}:{asana_gid}",
@@ -406,7 +449,7 @@ class TaskWarriorSide(SyncSide):
 
     def clear_pending_asana_comments(self, item_id: str) -> None:
         """Clear the recovery marker after all outbound comments are confirmed remote."""
-        self._tw._execute(  # noqa: SLF001
+        self._tw._execute(
             str(item_id),
             "modify",
             f"{tw_asana_pending_comments_key}:",
@@ -421,7 +464,7 @@ class TaskWarriorSide(SyncSide):
         if not mapping:
             return 0
 
-        raw_tasks = self._tw._get_json(self._filter_string(), "export")  # noqa: SLF001
+        raw_tasks = self._tw._get_json(self._filter_string(), "export")
         if isinstance(raw_tasks, dict):
             raw_tasks = [raw_tasks]
 
@@ -444,7 +487,7 @@ class TaskWarriorSide(SyncSide):
                 json.dump(raw_task, handle, ensure_ascii=False)
                 handle.write("\n")
             handle.flush()
-            self._tw._execute("import", handle.name)  # noqa: SLF001
+            self._tw._execute("import", handle.name)
 
         self._reload_items = True
         return len(changed)

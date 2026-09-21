@@ -341,6 +341,10 @@ class Aggregator:
             if callable(record_asana_gid):
                 record_asana_gid(str(source_tw_uuid), item_created_id)
 
+        post_create_sync = getattr(item_side, "post_create_sync", None)
+        if callable(post_create_sync):
+            post_create_sync(item_created_id, item)
+
         # Cache both sides with pickle - f=id_
         logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
         pickle_dump(item_created, serdes_dir / item_created_id)

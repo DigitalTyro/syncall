@@ -151,14 +151,25 @@ class Aggregator:
         new = {
             item_id for item_id in item_ids if item_id not in self._get_ids_map(helper=helper)
         }
-        # Deleted items do not exist in the sync side but still exist in my ID correspndences.
-        #
-        # Exclude the already new ones determined in the earlier step
-        deleted = {
+        # An item missing from the filtered result is not necessarily deleted. It may simply
+        # have fallen out of scope (for example a removed Taskwarrior tag or an Asana task that
+        # is no longer assigned to/followed by the user). Verify each missing registered item
+        # directly before propagating a deletion.
+        missing_registered_ids = {
             registered_id
             for registered_id in self._get_ids_map(helper=helper)
             if registered_id not in item_ids.difference(new)
         }
+        side, _ = self._get_side_instances(helper)
+        deleted = set()
+        for registered_id in missing_registered_ids:
+            if side.get_item(registered_id) is None:
+                deleted.add(registered_id)
+            else:
+                logger.debug(
+                    f"[{helper}] Item {registered_id} still exists but is outside the current "
+                    "sync scope; not treating it as deleted.",
+                )
 
         # Potentially modified items are all the items that exist in the sync side minus the
         # ones already determined as deleted or new

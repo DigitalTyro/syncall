@@ -180,7 +180,7 @@ def test_get_all_items_reuses_detailed_discovery_payloads(tmp_path) -> None:
     client.tasks.find_by_id.assert_not_called()
     client.tasks.stories.assert_called_once_with(
         "1",
-        fields=["gid", "resource_subtype", "text", "type"],
+        fields=["created_at", "gid", "resource_subtype", "text", "type"],
         page_size=100,
     )
 
@@ -198,7 +198,12 @@ def test_comment_cache_skips_unchanged_story_fetch(tmp_path) -> None:
     client.tasks.find_all.return_value = [raw_task]
     client.tasks.search_in_workspace.return_value = []
     client.tasks.stories.return_value = [
-        {"gid": "s1", "type": "comment", "text": "Cached comment"},
+        {
+            "created_at": "2025-04-02T09:15:00Z",
+            "gid": "s1",
+            "type": "comment",
+            "text": "Cached comment",
+        },
     ]
 
     first = side.get_all_items()
@@ -216,6 +221,66 @@ def test_comment_cache_skips_unchanged_story_fetch(tmp_path) -> None:
 
     second = second_side.get_all_items()
 
-    assert first[0].comments == ("Cached comment",)
-    assert second[0].comments == ("Cached comment",)
+    assert [str(comment) for comment in first[0].comments] == ["Cached comment"]
+    assert first[0].comments[0].gid == "s1"
+    assert [str(comment) for comment in second[0].comments] == ["Cached comment"]
+    assert second[0].comments[0].gid == "s1"
     second_client.tasks.stories.assert_not_called()
+
+
+def test_legacy_comment_cache_refreshes_nonempty_entries_once(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"modified_at":"2026-09-20T12:30:00Z","comments":["Old comment"]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    raw_task = _raw_task("1")
+    client.tasks.find_all.return_value = [raw_task]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {
+            "created_at": "2025-01-02T10:30:00Z",
+            "gid": "story-1",
+            "type": "comment",
+            "text": "Old comment",
+        },
+    ]
+
+    tasks = side.get_all_items()
+    side.finish()
+
+    assert tasks[0].comments[0].gid == "story-1"
+    assert tasks[0].comments[0].created_at is not None
+    client.tasks.stories.assert_called_once()
+    saved = cache_path.read_text()
+    assert '"version": 2' in saved
+    assert '"created_at": "2025-01-02T10:30:00.000+00:00"' in saved
+
+
+def test_legacy_empty_comment_cache_upgrades_without_refetch(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"modified_at":"2026-09-20T12:30:00Z","comments":[]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+
+    tasks = side.get_all_items()
+    side.finish()
+
+    assert tasks[0].comments == ()
+    client.tasks.stories.assert_not_called()
+    assert '"version": 2' in cache_path.read_text()

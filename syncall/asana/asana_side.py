@@ -6,7 +6,7 @@ import asana
 from bubop import logger
 from rich.console import Console
 
-from syncall.asana.asana_task import AsanaTask
+from syncall.asana.asana_task import AsanaComment, AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown
 from syncall.progress import make_progress
 from syncall.sync_side import SyncSide
@@ -24,7 +24,7 @@ TASK_FIELDS = [
     "modified_at",
     "name",
 ]
-STORY_FIELDS = ["gid", "resource_subtype", "text", "type"]
+STORY_FIELDS = ["created_at", "gid", "resource_subtype", "text", "type"]
 
 
 class AsanaSide(SyncSide):
@@ -165,7 +165,7 @@ class AsanaSide(SyncSide):
 
         return results
 
-    def _get_comments(self, item_id: AsanaGID) -> tuple[str, ...]:
+    def _get_comments(self, item_id: AsanaGID) -> tuple[AsanaComment, ...]:
         stories = self._client.tasks.stories(
             item_id,
             fields=STORY_FIELDS,
@@ -179,28 +179,38 @@ class AsanaSide(SyncSide):
             )
             text = story.get("text")
             if is_comment and text:
-                comments.append(str(text))
+                comments.append(AsanaComment.from_raw(story))
         return tuple(comments)
 
-    def _get_cached_comments(self, raw_task: dict) -> tuple[str, ...]:
+    def _get_cached_comments(self, raw_task: dict) -> tuple[AsanaComment, ...]:
         item_id = str(raw_task["gid"])
         modified_at = str(raw_task.get("modified_at") or "")
 
         cached = self._comment_cache.get(item_id)
         if cached is not None and cached.get("modified_at") == modified_at:
-            return tuple(str(comment) for comment in cached.get("comments", ()))
+            cached_comments = cached.get("comments", ())
+            if cached.get("version") == 2:
+                return tuple(AsanaComment.from_raw(comment) for comment in cached_comments)
+
+            # Legacy caches stored only comment text. Empty entries can be upgraded without
+            # another API request; non-empty entries need one refresh to recover GIDs/dates.
+            if not cached_comments:
+                cached["version"] = 2
+                self._comment_cache_dirty = True
+                return ()
 
         comments = self._get_comments(item_id)
         if self._comment_cache_path is not None:
             self._comment_cache[item_id] = {
+                "version": 2,
                 "modified_at": modified_at,
-                "comments": list(comments),
+                "comments": [comment.to_cache() for comment in comments],
             }
             self._comment_cache_dirty = True
         return comments
 
     def _add_missing_comments(self, item_id: AsanaGID, comments: Sequence[str]) -> None:
-        existing = set(self._get_comments(item_id))
+        existing = {comment.text for comment in self._get_comments(item_id)}
         for comment in comments:
             comment_text = str(comment).strip()
             if comment_text and comment_text not in existing:

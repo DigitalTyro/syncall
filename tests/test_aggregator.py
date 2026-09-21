@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from bidict import bidict
 from item_synchronizer.types import ID
@@ -188,3 +188,96 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     assert created_id == "asana-new"
     assert events == ["identity", "comments"]
     source_side.record_asana_gid.assert_called_once_with("tw-source", "asana-new")
+
+
+def _minimal_sync_aggregator(tmp_path) -> Aggregator:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.id_key = "gid"
+    helper_A.name = "Asana"
+    helper_B = MagicMock()
+    helper_B.id_key = "uuid"
+    helper_B.name = "Tw"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
+
+    side_A = MagicMock()
+    side_A.get_all_items.return_value = [{"gid": "a1", "name": "A"}]
+    side_B = MagicMock()
+    side_B.get_all_items.return_value = [{"uuid": "b1", "description": "B"}]
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = side_A
+    aggregator._side_B = side_B
+    aggregator._items_A = {}
+    aggregator._items_B = {}
+    aggregator._operation_progress = None
+    aggregator._operation_progress_task = None
+    aggregator._operation_failed = False
+    aggregator._B_to_A_map = bidict({"b1": "a1"})
+    aggregator._synchronizer = MagicMock()
+    aggregator._get_serdes_dirs = MagicMock(
+        return_value=(tmp_path / "a", tmp_path / "b"),
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    aggregator._remove_serdes_files = MagicMock()
+    aggregator.flush_correspondences = MagicMock()
+    return aggregator
+
+
+def test_sync_does_not_commit_source_snapshot_before_writes_succeed(tmp_path) -> None:
+    aggregator = _minimal_sync_aggregator(tmp_path)
+    changes_A = MagicMock()
+    changes_A.new = set()
+    changes_A.modified = {"a1"}
+    changes_A.deleted = set()
+    changes_B = MagicMock()
+    changes_B.new = set()
+    changes_B.modified = set()
+    changes_B.deleted = set()
+    aggregator.detect_changes = MagicMock(side_effect=[changes_A, changes_B])
+    aggregator._count_sync_operations = MagicMock(return_value=1)
+
+    def fail_after_write_attempt(**_kwargs) -> None:
+        aggregator._operation_failed = True
+
+    aggregator._synchronizer.sync.side_effect = fail_after_write_attempt
+
+    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
+        try:
+            aggregator.sync()
+        except RuntimeError as exc:
+            assert "sync state was not committed" in str(exc)
+        else:
+            raise AssertionError("Expected failed write to abort state commit")
+
+        pickle_dump_mock.assert_not_called()
+
+    aggregator.flush_correspondences.assert_called_once()
+
+
+def test_sync_commits_source_snapshot_only_after_successful_writes(tmp_path) -> None:
+    aggregator = _minimal_sync_aggregator(tmp_path)
+    changes_A = MagicMock()
+    changes_A.new = set()
+    changes_A.modified = {"a1"}
+    changes_A.deleted = set()
+    changes_B = MagicMock()
+    changes_B.new = set()
+    changes_B.modified = set()
+    changes_B.deleted = set()
+    aggregator.detect_changes = MagicMock(side_effect=[changes_A, changes_B])
+    aggregator._count_sync_operations = MagicMock(return_value=1)
+
+    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
+        def successful_write(**_kwargs) -> None:
+            pickle_dump_mock.assert_not_called()
+
+        aggregator._synchronizer.sync.side_effect = successful_write
+        aggregator.sync()
+
+        pickle_dump_mock.assert_called_once()
+
+    aggregator.flush_correspondences.assert_called_once()

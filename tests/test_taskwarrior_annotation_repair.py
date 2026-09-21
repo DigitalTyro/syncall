@@ -239,9 +239,7 @@ def test_backfill_asana_gids_updates_only_missing_or_wrong_values() -> None:
         assert command == "import"
         with Path(path).open(encoding="utf-8") as handle:
             imported.extend(
-                json.loads(line)
-                for line in handle.read().splitlines()
-                if line.strip()
+                json.loads(line) for line in handle.read().splitlines() if line.strip()
             )
         return "", ""
 

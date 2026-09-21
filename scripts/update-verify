@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(dirname "$SCRIPT_DIR")
+PYTHON="$REPO_DIR/.venv/bin/python"
+RUFF="$REPO_DIR/.venv/bin/ruff"
+
+if [ ! -x "$PYTHON" ]; then
+    echo "Missing virtual environment at $REPO_DIR/.venv" >&2
+    exit 1
+fi
+
+cd "$REPO_DIR"
+
+echo "==> Pulling latest master"
+git pull --ff-only origin master
+
+echo "==> Installing current syncall code into .venv"
+"$PYTHON" -m pip install --upgrade --force-reinstall --no-deps .
+
+echo "==> Checking dependencies"
+"$PYTHON" -m pip check
+
+echo "==> Running full test suite"
+"$PYTHON" -m pytest
+
+echo "==> Running Ruff lint checks"
+"$RUFF" check syncall tests
+
+echo "==> Running Ruff formatting check"
+"$RUFF" format --check syncall tests
+
+echo "==> Everything passed"

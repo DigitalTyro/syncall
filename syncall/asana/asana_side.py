@@ -318,6 +318,13 @@ class AsanaSide(SyncSide):
         for key in ignore_keys:
             compare_keys.discard(key)
 
+        if "comments" in compare_keys:
+            comments1 = [str(comment) for comment in item1.get("comments", ())]
+            comments2 = [str(comment) for comment in item2.get("comments", ())]
+            if comments1 != comments2:
+                return False
+            compare_keys.discard("comments")
+
         if item1.get("due_at", None) is not None and item2.get("due_at", None) is not None:
             compare_keys.discard("due_on")
         elif item1.get("due_on", None) is not None and item2.get("due_on", None) is not None:

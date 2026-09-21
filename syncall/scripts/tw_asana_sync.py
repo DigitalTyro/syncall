@@ -53,7 +53,7 @@ def _acquire_sync_lock():
     return handle
 
 
-def _resume_pending_asana_comments(
+def resume_pending_asana_comments(
     tw_side: TaskWarriorSide,
     asana_side: AsanaSide,
     items: list[dict],
@@ -289,7 +289,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
         # Resume any interrupted TW→Asana task creation before normal change detection.
         # The marker lives on the Taskwarrior task itself, so this does not depend on
         # syncall's cache or preference files.
-        resumed_pending = _resume_pending_asana_comments(
+        resumed_pending = resume_pending_asana_comments(
             tw_side,
             asana_side,
             existing_tw_items,

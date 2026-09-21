@@ -137,3 +137,20 @@ class TestTwAsanaConversions(GenericTestCase):
 
         round_trip = convert_tw_to_asana(tw_item)
         assert round_trip.comments == ("First comment", "Second comment")
+
+
+    def test_blank_asana_description_is_skipped(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["gid"] = "blank-1"
+        asana_task["name"] = "   "
+
+        assert convert_asana_to_tw(asana_task) is None
+
+    def test_client_only_asana_name_is_skipped(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["gid"] = "blank-2"
+        asana_task["name"] = "[Color Wow]"
+
+        assert convert_asana_to_tw(asana_task) is None

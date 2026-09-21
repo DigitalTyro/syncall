@@ -338,9 +338,17 @@ class AsanaSide(SyncSide):
             raise RuntimeError(f"Failed to retrieve newly created Asana task {item_id}.")
         return refreshed
 
+    def ensure_comments(
+        self,
+        item_id: AsanaGID,
+        comments: Sequence[str | AsanaComment],
+    ) -> None:
+        """Ensure desired comments exist remotely using live duplicate checks."""
+        self._add_missing_comments(item_id, comments)
+
     def post_create_sync(self, item_id: AsanaGID, item: AsanaTask) -> None:
         """Apply comments only after the caller has checkpointed task identity."""
-        self._add_missing_comments(item_id, item.comments)
+        self.ensure_comments(item_id, item.comments)
 
     @classmethod
     def id_key(cls) -> str:

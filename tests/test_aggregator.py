@@ -83,3 +83,45 @@ def test_missing_filtered_item_that_is_gone_is_deleted(tmp_path) -> None:
 
     assert changes.deleted == {"1"}
     side.get_item.assert_called_once_with("1")
+
+
+
+def test_item_getter_uses_current_snapshot_before_live_side() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_B = MagicMock()
+    side_A = MagicMock()
+    side_B = MagicMock()
+    cached_item = {"id": "asana-1"}
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._items_A = {"asana-1": cached_item}
+    aggregator._items_B = {}
+    aggregator._get_side_instances = MagicMock(return_value=(side_A, side_B))
+
+    item = aggregator.item_getter_for("asana-1", helper_A)
+
+    assert item is cached_item
+    side_A.get_item.assert_not_called()
+
+
+def test_count_sync_operations_counts_conflict_once() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    aggregator._B_to_A_map = {"tw-1": "asana-1"}
+
+    changes_A = MagicMock()
+    changes_A.new = {"asana-new"}
+    changes_A.modified = {"asana-1"}
+    changes_A.deleted = set()
+
+    changes_B = MagicMock()
+    changes_B.new = {"tw-new"}
+    changes_B.modified = {"tw-1"}
+    changes_B.deleted = set()
+
+    from bidict import bidict
+
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+
+    assert aggregator._count_sync_operations(changes_A, changes_B) == 3

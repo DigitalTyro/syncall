@@ -11,6 +11,7 @@ from bubop import (
     logger,
     loguru_tqdm_sink,
 )
+from rich.console import Console
 from xdg import xdg_config_home
 
 from syncall.app_utils import confirm_before_proceeding, inform_about_app_extras
@@ -34,6 +35,7 @@ from syncall.app_utils import (
     register_teardown_handler,
 )
 from syncall.cli import opts_asana, opts_miscellaneous, opts_tw_filtering
+from syncall.progress import make_progress
 from syncall.tw_asana_utils import convert_asana_to_tw, convert_tw_to_asana
 
 
@@ -253,25 +255,31 @@ def main(  # noqa: PLR0915, C901, PLR0912
         # Reconcile them separately from cached Asana story metadata so interrupted migrations
         # are safe to resume and future runs become cheap no-ops once dates are correct.
         current_tw_items = {str(item["uuid"]): item for item in tw_side.get_all_items()}
+        mapped_tasks = tuple(aggregator._B_to_A_map.items())  # noqa: SLF001
         repaired_annotations = 0
-        for tw_id, asana_id in tuple(aggregator._B_to_A_map.items()):  # noqa: SLF001
-            asana_item = aggregator._items_A.get(str(asana_id))  # noqa: SLF001
-            if asana_item is None:
-                continue
-
-            desired_tw_item = convert_asana_to_tw(asana_item)
-            if desired_tw_item is None:
-                continue
-
-            current_tw_item = current_tw_items.get(str(tw_id))
-            current_annotations = (
-                current_tw_item.get("annotations", ()) if current_tw_item is not None else None
+        reconciliation_progress = make_progress(console=Console(), unit="tasks")
+        with reconciliation_progress:
+            reconciliation_task = reconciliation_progress.add_task(
+                "Checking annotation history",
+                total=len(mapped_tasks),
             )
-            repaired_annotations += tw_side.reconcile_annotation_timestamps(
-                str(tw_id),
-                desired_tw_item.get("annotations", ()),
-                current_annotations=current_annotations,
-            )
+            for tw_id, asana_id in mapped_tasks:
+                asana_item = aggregator._items_A.get(str(asana_id))  # noqa: SLF001
+                if asana_item is not None:
+                    desired_tw_item = convert_asana_to_tw(asana_item)
+                    if desired_tw_item is not None:
+                        current_tw_item = current_tw_items.get(str(tw_id))
+                        current_annotations = (
+                            current_tw_item.get("annotations", ())
+                            if current_tw_item is not None
+                            else None
+                        )
+                        repaired_annotations += tw_side.reconcile_annotation_timestamps(
+                            str(tw_id),
+                            desired_tw_item.get("annotations", ()),
+                            current_annotations=current_annotations,
+                        )
+                reconciliation_progress.advance(reconciliation_task)
 
         if repaired_annotations:
             logger.info(

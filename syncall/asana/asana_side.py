@@ -60,8 +60,11 @@ class AsanaSide(SyncSide):
             return {}
 
         try:
-            return json.loads(self._comment_cache_path.read_text())
-        except (OSError, json.JSONDecodeError):
+            cache = json.loads(self._comment_cache_path.read_text())
+            if not isinstance(cache, dict):
+                raise ValueError("Comment cache root must be an object.")
+            return cache
+        except (OSError, ValueError, json.JSONDecodeError):
             logger.warning(
                 f"Could not read Asana comment cache at {self._comment_cache_path}; rebuilding it.",
             )
@@ -207,9 +210,9 @@ class AsanaSide(SyncSide):
                     except ValueError:
                         last_checked = None
 
-                if last_checked is not None:
+                if last_checked is not None and last_checked.tzinfo is not None:
                     cache_age = datetime.datetime.now(datetime.timezone.utc) - last_checked
-                    if cache_age < COMMENT_CACHE_MAX_AGE:
+                    if datetime.timedelta() <= cache_age < COMMENT_CACHE_MAX_AGE:
                         return structured_comments
 
             # Legacy caches stored only comment text. Empty entries can be upgraded without

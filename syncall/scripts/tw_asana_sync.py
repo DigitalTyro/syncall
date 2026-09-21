@@ -317,7 +317,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
         # Backfill all current mapped identities before doing any network writes. This makes
         # the mapping reconstructable even if syncall preference/cache files are later lost.
         backfilled = tw_side.backfill_asana_gids(
-            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},  # noqa: SLF001
+            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},
         )
         if backfilled:
             logger.info(f"Persisted Asana identity on {backfilled} Taskwarrior task(s).")
@@ -327,7 +327,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
 
         # Backfill any mappings created during this sync too.
         post_sync_backfilled = tw_side.backfill_asana_gids(
-            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},  # noqa: SLF001
+            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},
         )
         if post_sync_backfilled:
             logger.info(
@@ -339,7 +339,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
         # Reconcile them separately from cached Asana story metadata so interrupted migrations
         # are safe to resume and future runs become cheap no-ops once dates are correct.
         current_tw_items = {str(item["uuid"]): item for item in tw_side.get_all_items()}
-        mapped_tasks = tuple(aggregator._B_to_A_map.items())  # noqa: SLF001
+        mapped_tasks = tuple(aggregator._B_to_A_map.items())
         repaired_annotations = 0
         reconciliation_progress = make_progress(console=Console(), unit="tasks")
         with reconciliation_progress:
@@ -348,7 +348,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 total=len(mapped_tasks),
             )
             for tw_id, asana_id in mapped_tasks:
-                asana_item = aggregator._items_A.get(str(asana_id))  # noqa: SLF001
+                asana_item = aggregator._items_A.get(str(asana_id))
                 if asana_item is not None:
                     desired_tw_item = convert_asana_to_tw(asana_item)
                     if desired_tw_item is not None:

@@ -4,6 +4,7 @@ import sys
 
 import asana
 import click
+from xdg import xdg_config_home
 from bubop import (
     check_optional_mutually_exclusive,
     check_required_mutually_exclusive,
@@ -214,6 +215,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
         client=asana_client,
         task_gid=asana_task_gid,
         workspace_gid=asana_workspace_gid,
+        comment_cache_path=xdg_config_home() / "syncall" / "asana_comments.json",
     )
 
     # teardown function and exception handling ------------------------------------------------

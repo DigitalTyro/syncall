@@ -161,6 +161,27 @@ class TestTwAsanaConversions(GenericTestCase):
         assert annotation.source_id == "story-123"
         assert annotation.source_entry.isoformat() == "2024-03-04T12:34:56+00:00"
 
+
+
+    def test_asana_gid_is_embedded_in_taskwarrior_conversion(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["gid"] = "asana-123"
+
+        tw_item = convert_asana_to_tw(asana_task)
+
+        assert tw_item["asana_gid"] == "asana-123"
+
+    def test_taskwarrior_uuid_is_carried_as_internal_creation_identity(self):
+        self.load_sample_items()
+        tw_item = dict(self.tw_item)
+        tw_item["uuid"] = "11111111-1111-1111-1111-111111111111"
+
+        asana_task = convert_tw_to_asana(tw_item)
+
+        assert asana_task.source_tw_uuid == tw_item["uuid"]
+        assert "source_tw_uuid" not in dict(asana_task)
+
     def test_blank_asana_description_is_skipped(self):
         self.load_sample_items()
         asana_task = dict(self.asana_task)

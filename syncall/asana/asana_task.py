@@ -65,6 +65,7 @@ class AsanaTask(Mapping):
     html_notes: str = "<body></body>"
     comments: tuple[AsanaComment, ...] = ()
     gid: AsanaGID | None = None
+    source_tw_uuid: str | None = None
 
     _required_key_names: frozenset[str] = frozenset(
         {

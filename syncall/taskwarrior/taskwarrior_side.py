@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
@@ -13,11 +15,13 @@ from xdg import xdg_config_home
 from syncall.sync_side import ItemType, SyncSide
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from syncall.types import TaskwarriorRawItem
 
 tw_duration_key = "syncallduration"
+tw_client_key = "client"
+tw_notes_key = "notes"
 
 OrderByType = Literal[
     "description",
@@ -31,7 +35,11 @@ OrderByType = Literal[
 
 TW_CONFIG_DEFAULT_OVERRIDES = {
     "context": "none",
-    "uda": {tw_duration_key: {"type": "duration", "label": "Syncall Duration"}},
+    "uda": {
+        tw_duration_key: {"type": "duration", "label": "Syncall Duration"},
+        tw_client_key: {"type": "string", "label": "Client"},
+        tw_notes_key: {"type": "string", "label": "Notes"},
+    },
 }
 
 
@@ -40,6 +48,16 @@ def parse_datetime_(dt: str | datetime.datetime) -> datetime.datetime:
         return dt
 
     return parse_datetime(dt)
+
+
+def merge_config_overrides(config_overrides: Mapping[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(TW_CONFIG_DEFAULT_OVERRIDES)
+    for key, value in config_overrides.items():
+        if key == "uda" and isinstance(value, Mapping):
+            merged["uda"].update(value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class TaskWarriorSide(SyncSide):
@@ -75,10 +93,8 @@ class TaskWarriorSide(SyncSide):
         self._project: str = project or ""
         self._tw_filter: str = tw_filter
 
-        config_overrides_ = TW_CONFIG_DEFAULT_OVERRIDES.copy()
-        config_overrides_.update(config_overrides)
+        config_overrides_ = merge_config_overrides(config_overrides)
 
-        # determine config file
         config_file = None
         candidate_config_files = [
             Path(TASKRC).expanduser(),
@@ -107,21 +123,14 @@ class TaskWarriorSide(SyncSide):
             config_overrides=config_overrides_,
         )
 
-        # All TW tasks
         self._items_cache: dict[str, TaskwarriorRawItem] = {}
-
-        # Whether to refresh the cached list of items
         self._reload_items = True
 
     def start(self):
         logger.info(f"Initializing {self.fullname}...")
 
     def _load_all_items(self):
-        """Load all tasks to memory.
-
-        May return already loaded list of items, depending on the validity of
-        the cache.
-        """
+        """Load all tasks to memory."""
         if not self._reload_items:
             return
         filter_ = [*[f"+{tag}" for tag in self._tags]]
@@ -134,9 +143,7 @@ class TaskWarriorSide(SyncSide):
         tasks = self._tw.load_tasks_and_filter(command="all", filter_=filter_)
 
         items = [*tasks["completed"], *tasks["pending"]]
-        self._items_cache: dict[str, TaskwarriorRawItem] = {  # type: ignore
-            str(item["uuid"]): item for item in items
-        }
+        self._items_cache = {str(item["uuid"]): item for item in items}  # type: ignore
         self._reload_items = False
 
     def get_all_items(
@@ -146,15 +153,6 @@ class TaskWarriorSide(SyncSide):
         use_ascending_order: bool = True,
         **kargs,
     ) -> list[TaskwarriorRawItem]:
-        """Fetch the tasks off the local taskw db, taking into account the filters set in the
-        during the instance construction.
-
-        :param skip_completed: Skip completed tasks
-        :param order_by: specify the order by which to return the items.
-        :param use_ascending_order: Boolean flag to specify ascending/descending order
-        :return: List of all the tasks
-        :raises: ValueError in case the order_by key is invalid
-        """
         self._load_all_items()
         tasks = list(self._items_cache.values())
         if skip_completed:
@@ -175,38 +173,23 @@ class TaskWarriorSide(SyncSide):
             if item is None:
                 return None
 
-            # amend cache
             self._items_cache[str(item["uuid"])] = item  # type: ignore
         item["uuid"] = str(item["uuid"])
         return item if item["status"] != "deleted" else None  # type: ignore
 
     def update_item(self, item_id: str, **changes):
-        """Update an already added item.
-
-        :raises ValaueError: In case the item is not present in the db
-        """
         changes.pop("id", False)
         t = self._tw.get_task(uuid=UUID(item_id))[-1]
 
-        # task CLI doesn't allow `imask`
         unwanted_keys = ["imask", "recur", "rtype", "parent", "urgency"]
         for i in unwanted_keys:
             t.pop(i, False)
 
-        # taskwarrior doesn't let you explicitly set the update time.
-        # even if you set it it will revert to the time that you call
-        # `tw.task_update`
         d = dict(t)
         d.update(changes)
         self._tw.task_update(d)
 
     def add_item(self, item: ItemType) -> ItemType:
-        """Add a new Item as a TW task.
-
-        :param item:  This should contain only keys that exist in standard TW
-                      tasks (e.g., proj, tag, due). It is mandatory that it
-                      contains the 'description' key for the task title
-        """
         item = cast("TaskwarriorRawItem", item)
         assert "description" in item.keys(), "Item doesn't have a description."
         assert "uuid" not in item.keys(), (
@@ -231,8 +214,6 @@ class TaskWarriorSide(SyncSide):
         new_id = new_item["id"]
         logger.debug(f'Task "{new_id}" created - "{description[0:len_print]}"...')
 
-        # explicitly mark as deleted - taskw doesn't like task_add(`status:deleted`) so we have
-        # to do it in two steps
         if curr_status == "deleted":
             logger.debug(
                 f'Task "{new_id}" marking as deleted - "{description[0:len_print]}"...',
@@ -270,9 +251,11 @@ class TaskWarriorSide(SyncSide):
             k
             for k in [
                 "annotations",
+                tw_client_key,
                 "description",
                 "scheduled",
                 "due",
+                tw_notes_key,
                 "status",
                 "uuid",
                 tw_duration_key,
@@ -280,30 +263,26 @@ class TaskWarriorSide(SyncSide):
             if k not in ignore_keys
         ]
 
-        # special care for the annotations key
         if "annotations" in item1 and "annotations" in item2:
-            if item1["annotations"] != item2["annotations"]:
+            if [str(value) for value in item1["annotations"]] != [
+                str(value) for value in item2["annotations"]
+            ]:
                 return False
             item1.pop("annotations")
             item2.pop("annotations")
-        # one may contain empty list
         elif "annotations" in item1 and "annotations" not in item2:
             if item1["annotations"] != []:
                 return False
             item1.pop("annotations")
-        # one may contain empty list
         elif "annotations" in item2 and "annotations" not in item1:
             if item2["annotations"] != []:
                 return False
             item2.pop("annotations")
-        else:
-            pass
 
         for item in (item1, item2):
             if "uuid" in item:
                 item["uuid"] = str(item["uuid"])
 
-            # convert datetime keys to actual datetime objects if they are not.
             if "modified" in item:
                 item["modified"] = parse_datetime_(item["modified"])
 

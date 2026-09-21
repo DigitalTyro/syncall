@@ -171,16 +171,26 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     target_side.add_item.return_value = created
     events: list[str] = []
 
-    source_side.record_asana_gid.side_effect = lambda *_: events.append("identity")
-    target_side.post_create_sync.side_effect = lambda *_: events.append("comments")
-    source_side.clear_pending_asana_comments.side_effect = lambda *_: events.append("clear")
+    def record_identity(*_args) -> None:
+        events.append("identity")
+
+    def record_comments(*_args) -> None:
+        events.append("comments")
+
+    def record_clear(*_args) -> None:
+        events.append("clear")
+
+    def record_prefs() -> None:
+        events.append("prefs")
+
+    source_side.record_asana_gid.side_effect = record_identity
+    target_side.post_create_sync.side_effect = record_comments
+    source_side.clear_pending_asana_comments.side_effect = record_clear
     item = MagicMock()
     item.source_tw_uuid = "tw-source"
 
     aggregator._B_to_A_map = bidict()
-    aggregator.flush_correspondences = MagicMock(
-        side_effect=lambda: events.append("prefs"),
-    )
+    aggregator.flush_correspondences = MagicMock(side_effect=record_prefs)
     aggregator._get_side_instances = MagicMock(
         return_value=(target_side, source_side),
     )

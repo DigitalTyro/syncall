@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from syncall.scripts.tw_asana_sync import resume_pending_asana_comments
 
 
@@ -22,6 +21,7 @@ def test_pending_comment_recovery_confirms_remote_before_clearing_marker() -> No
     tw_side = MagicMock()
     asana_side = MagicMock()
     events: list[str] = []
+
     def record_remote(*_args) -> None:
         events.append("remote")
 

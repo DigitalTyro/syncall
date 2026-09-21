@@ -18,8 +18,10 @@ from bubop import PrefsManager, logger, pickle_dump, pickle_load
 from item_synchronizer import Synchronizer
 from item_synchronizer.helpers import SideChanges
 from item_synchronizer.resolution_strategy import AlwaysSecondRS, ResolutionStrategy
+from rich.console import Console
 
 from syncall.app_utils import app_name
+from syncall.progress import make_progress
 from syncall.side_helper import SideHelper
 
 
@@ -127,6 +129,10 @@ class Aggregator:
             side_names=(side_A.fullname, side_B.fullname),
         )
 
+        self._items_A: dict[ID, Item] = {}
+        self._items_B: dict[ID, Item] = {}
+        self._operation_progress = None
+        self._operation_progress_task = None
         self.cleaned_up = False
 
     def __enter__(self) -> Self:
@@ -191,37 +197,59 @@ class Aggregator:
 
     def sync(self) -> None:
         """Entrypoint method."""
-        items_A = {
-            str(item[self._helper_A.id_key]): item for item in self._side_A.get_all_items()
-        }
-        items_B = {
-            str(item[self._helper_B.id_key]): item for item in self._side_B.get_all_items()
-        }
+        console = Console()
 
-        # find what's changed in each side
-        changes_A = self.detect_changes(self._helper_A, items_A)
-        changes_B = self.detect_changes(self._helper_B, items_B)
+        with console.status("[bold]Loading Asana snapshot...[/bold]", spinner="dots"):
+            self._items_A = {
+                str(item[self._helper_A.id_key]): item for item in self._side_A.get_all_items()
+            }
+        with console.status("[bold]Loading Taskwarrior snapshot...[/bold]", spinner="dots"):
+            self._items_B = {
+                str(item[self._helper_B.id_key]): item for item in self._side_B.get_all_items()
+            }
 
-        # pickle items that are new or updated
-        side_A_serdes_dir, side_B_serdes_dir = self._get_serdes_dirs(self._helper_A)
-        side_A, side_B = self._get_side_instances(self._helper_A)
-        for item_id in changes_B.new.union(changes_B.modified):
-            item = side_B.get_item(item_id)
-            if item is None:
-                raise RuntimeError(f"Failed to retrieve serialized version of Item {item_id}")
-            pickle_dump(item, side_B_serdes_dir / item_id)
-        for item_id in changes_A.new.union(changes_A.modified):
-            item = side_A.get_item(item_id)
-            if item is None:
-                raise RuntimeError(f"Failed to retrieve serialized version of Item {item_id}")
-            pickle_dump(item, side_A_serdes_dir / item_id)
+        with console.status("[bold]Detecting changes...[/bold]", spinner="dots"):
+            changes_A = self.detect_changes(self._helper_A, self._items_A)
+            changes_B = self.detect_changes(self._helper_B, self._items_B)
 
-        # remove deleted pickled items
+        cache_items = [
+            *(
+                (item_id, self._items_B[item_id], self._get_serdes_dirs(self._helper_B)[0])
+                for item_id in changes_B.new.union(changes_B.modified)
+            ),
+            *(
+                (item_id, self._items_A[item_id], self._get_serdes_dirs(self._helper_A)[0])
+                for item_id in changes_A.new.union(changes_A.modified)
+            ),
+        ]
+        if cache_items:
+            progress = make_progress(console=console, unit="items")
+            with progress:
+                progress_task = progress.add_task("Saving sync state", total=len(cache_items))
+                for item_id, item, serdes_dir in cache_items:
+                    pickle_dump(item, serdes_dir / item_id)
+                    progress.advance(progress_task)
+
         self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
         self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
 
-        # synchronize
-        self._synchronizer.sync(changes_A=changes_A, changes_B=changes_B)
+        total_operations = self._count_sync_operations(changes_A, changes_B)
+        if total_operations == 0:
+            console.print("[bold green]Already in sync[/bold green]")
+            return
+
+        progress = make_progress(console=console, unit="ops")
+        with progress:
+            self._operation_progress = progress
+            self._operation_progress_task = progress.add_task(
+                "Applying sync changes",
+                total=total_operations,
+            )
+            try:
+                self._synchronizer.sync(changes_A=changes_A, changes_B=changes_B)
+            finally:
+                self._operation_progress = None
+                self._operation_progress_task = None
 
     def start(self) -> None:
         """Initialize the aggregator."""
@@ -233,6 +261,21 @@ class Aggregator:
         self._side_A.finish()
         self._side_B.finish()
 
+    def _count_sync_operations(self, changes_A: SideChanges, changes_B: SideChanges) -> int:
+        """Count the number of create/update/delete operations the synchronizer will perform."""
+        touched_A = changes_A.modified.union(changes_A.deleted)
+        touched_B = changes_B.modified.union(changes_B.deleted)
+        mapped_touched_A_in_B = {
+            self._B_to_A[item_id] for item_id in touched_A if item_id in self._B_to_A
+        }
+        conflicts = touched_B.intersection(mapped_touched_A_in_B)
+        touched_operations = len(touched_A) + len(touched_B) - len(conflicts)
+        return len(changes_A.new) + len(changes_B.new) + touched_operations
+
+    def _advance_operation_progress(self) -> None:
+        if self._operation_progress is not None and self._operation_progress_task is not None:
+            self._operation_progress.advance(self._operation_progress_task)
+
     def inserter_to(self, item: Item, helper: SideHelper) -> ID:
         """Insert an item using the given side helper.
 
@@ -240,7 +283,7 @@ class Aggregator:
         """
         item_side, _ = self._get_side_instances(helper)
         serdes_dir, _ = self._get_serdes_dirs(helper)
-        logger.info(
+        logger.debug(
             f"[{helper.other}] Inserting item [{self._summary_of(item, helper):10}] at"
             f" {helper}...",
         )
@@ -251,6 +294,7 @@ class Aggregator:
         # Cache both sides with pickle - f=id_
         logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
         pickle_dump(item_created, serdes_dir / item_created_id)
+        self._advance_operation_progress()
 
         return item_created_id
 
@@ -258,24 +302,30 @@ class Aggregator:
         """Update an item using the given side helper."""
         side, _ = self._get_side_instances(helper)
         serdes_dir, _ = self._get_serdes_dirs(helper)
-        logger.info(
+        logger.debug(
             f"[{helper.other}] Updating item [{self._summary_of(item, helper):10}] at"
             f" {helper}...",
         )
 
         side.update_item(item_id, **item)
         pickle_dump(item, serdes_dir / item_id)
+        self._advance_operation_progress()
 
     def deleter_to(self, item_id: ID, helper: SideHelper):
         """Delete an item using the given side helper."""
-        logger.info(f"[{helper}] Synchronising deleted item, id -> {item_id}...")
+        logger.debug(f"[{helper}] Synchronising deleted item, id -> {item_id}...")
         side, _ = self._get_side_instances(helper)
         side.delete_single_item(item_id)
 
         self._remove_serdes_files(helper=helper, ids=(item_id,))
+        self._advance_operation_progress()
 
     def item_getter_for(self, item_id: ID, helper: SideHelper) -> Item:
-        """Item Getter."""
+        """Return an item from the current sync snapshot, falling back to the live side."""
+        snapshot = self._items_B if helper is self._helper_B else self._items_A
+        if item_id in snapshot:
+            return snapshot[item_id]
+
         logger.debug(f"Fetching {helper} item for id -> {item_id}")
         side, _ = self._get_side_instances(helper)
         return side.get_item(item_id)

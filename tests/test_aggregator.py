@@ -291,6 +291,7 @@ def test_sync_commits_source_snapshot_only_after_successful_writes(tmp_path) -> 
     aggregator._count_sync_operations = MagicMock(return_value=1)
 
     with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
+
         def successful_write(**_kwargs) -> None:
             pickle_dump_mock.assert_not_called()
 
@@ -346,7 +347,9 @@ def test_authoritative_written_snapshot_is_not_overwritten_by_pre_sync_cache(tmp
         pickle_dump_mock.assert_not_called()
 
 
-def test_new_asana_task_comments_continue_if_one_identity_checkpoint_succeeds(tmp_path) -> None:
+def test_new_asana_task_comments_continue_if_one_identity_checkpoint_succeeds(
+    tmp_path,
+) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper = MagicMock()
     helper.id_key = "gid"

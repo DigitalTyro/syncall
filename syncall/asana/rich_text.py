@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Callable
 from html.parser import HTMLParser
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _CODE_RE = re.compile(r"`([^`\n]+)`")
@@ -143,23 +146,38 @@ def _render_paragraph(lines: list[str], index: int) -> tuple[str, int]:
     return _inline_markdown_to_html("\n".join(paragraph)), index
 
 
-def _render_next_block(lines: list[str], index: int) -> tuple[str, int]:
-    line = lines[index]
-    kind = _block_kind(line)
+def _render_horizontal_rule(_lines: list[str], index: int) -> tuple[str, int]:
+    return "<hr/>", index + 1
 
-    if kind == "pre":
-        return _render_fenced_code(lines, index)
-    if kind == "heading":
-        return _render_heading(line, index)
-    if kind == "hr":
-        return "<hr/>", index + 1
-    if kind == "ul":
-        return _render_list(lines, index, _UL_RE, "ul")
-    if kind == "ol":
-        return _render_list(lines, index, _OL_RE, "ol")
-    if kind == "blockquote":
-        return _render_blockquote(lines, index)
-    return _render_paragraph(lines, index)
+
+def _render_unordered_list(lines: list[str], index: int) -> tuple[str, int]:
+    return _render_list(lines, index, _UL_RE, "ul")
+
+
+def _render_ordered_list(lines: list[str], index: int) -> tuple[str, int]:
+    return _render_list(lines, index, _OL_RE, "ol")
+
+
+def _render_heading_block(lines: list[str], index: int) -> tuple[str, int]:
+    return _render_heading(lines[index], index)
+
+
+_BLOCK_RENDERERS: dict[str, Callable[[list[str], int], tuple[str, int]]] = {
+    "pre": _render_fenced_code,
+    "heading": _render_heading_block,
+    "hr": _render_horizontal_rule,
+    "ul": _render_unordered_list,
+    "ol": _render_ordered_list,
+    "blockquote": _render_blockquote,
+}
+
+
+def _render_next_block(lines: list[str], index: int) -> tuple[str, int]:
+    kind = _block_kind(lines[index])
+    renderer = _BLOCK_RENDERERS.get(kind)
+    if renderer is None:
+        renderer = _render_paragraph
+    return renderer(lines, index)
 
 
 def markdown_to_asana_html(markdown: str) -> str:

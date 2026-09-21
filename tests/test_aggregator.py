@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from unittest.mock import MagicMock, patch
 
+import pytest
 from bidict import bidict
 from item_synchronizer.types import ID
 from syncall.aggregator import Aggregator
@@ -264,15 +265,13 @@ def test_sync_does_not_commit_source_snapshot_before_writes_succeed(tmp_path) ->
 
     aggregator._synchronizer.sync.side_effect = fail_after_write_attempt
 
-    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
-        try:
-            aggregator.sync()
-        except RuntimeError as exc:
-            assert "sync state was not committed" in str(exc)
-        else:
-            raise AssertionError("Expected failed write to abort state commit")
+    with (
+        patch("syncall.aggregator.pickle_dump") as pickle_dump_mock,
+        pytest.raises(RuntimeError, match="sync state was not committed"),
+    ):
+        aggregator.sync()
 
-        pickle_dump_mock.assert_not_called()
+    pickle_dump_mock.assert_not_called()
 
     aggregator.flush_correspondences.assert_called_once()
 
@@ -404,12 +403,8 @@ def test_new_asana_task_refuses_comments_if_identity_cannot_be_checkpointed(tmp_
     aggregator._operation_failed = False
     aggregator._written_serdes = set()
 
-    try:
+    with pytest.raises(RuntimeError, match="refusing to create comments"):
         aggregator.inserter_to(item, helper)
-    except RuntimeError as exc:
-        assert "refusing to create comments" in str(exc)
-    else:
-        raise AssertionError("Expected creation to stop before comment writes")
 
     target_side.post_create_sync.assert_not_called()
     assert aggregator._operation_failed is True
@@ -433,15 +428,13 @@ def test_failed_update_checkpoints_actual_target_for_safe_retry(tmp_path) -> Non
     aggregator._written_serdes = set()
     aggregator._advance_operation_progress = MagicMock()
 
-    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
-        try:
-            aggregator.updater_to("a1", {"name": "Desired"}, helper)
-        except RuntimeError as exc:
-            assert "partial remote failure" in str(exc)
-        else:
-            raise AssertionError("Expected simulated partial update failure")
+    with (
+        patch("syncall.aggregator.pickle_dump") as pickle_dump_mock,
+        pytest.raises(RuntimeError, match="partial remote failure"),
+    ):
+        aggregator.updater_to("a1", {"name": "Desired"}, helper)
 
-        pickle_dump_mock.assert_called_once_with(current_target, tmp_path / "a1")
+    pickle_dump_mock.assert_called_once_with(current_target, tmp_path / "a1")
 
     side.get_item.assert_called_once_with("a1", use_cached=False)
     assert aggregator._operation_failed is True

@@ -555,3 +555,21 @@ def test_corrupt_comment_cache_is_rebuilt_from_asana(tmp_path) -> None:
 
     assert [str(comment) for comment in tasks[0].comments] == ["Recovered"]
     client.tasks.stories.assert_called_once()
+
+
+def test_comment_identity_collapses_whitespace_and_unicode_equivalents() -> None:
+    side, client = _side()
+    client.tasks.stories.return_value = [
+        {
+            "gid": "s1",
+            "type": "comment",
+            "text": "Café   first\tline\nsecond line",
+        },
+    ]
+
+    side._add_missing_comments(
+        "1",
+        ["Cafe\u0301 first line   second line"],
+    )
+
+    client.tasks.add_comment.assert_not_called()

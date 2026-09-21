@@ -23,7 +23,7 @@ class AsanaComment:
         return self.text
 
     @classmethod
-    def from_raw(cls, raw_comment: Any) -> AsanaComment:
+    def from_raw(cls, raw_comment: object) -> AsanaComment:
         if isinstance(raw_comment, cls):
             return raw_comment
 

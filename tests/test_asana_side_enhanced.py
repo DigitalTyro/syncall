@@ -86,7 +86,7 @@ def test_get_item_fetches_rich_notes_and_comment_stories() -> None:
 
     assert task is not None
     assert task.html_notes == "<body><strong>Short note</strong></body>"
-    assert task.comments == ("First comment", "Second comment")
+    assert [str(comment) for comment in task.comments] == ["First comment", "Second comment"]
 
 
 def test_update_adds_only_missing_comments() -> None:
@@ -340,3 +340,130 @@ def test_structured_comment_cache_periodically_refreshes_edited_comments(tmp_pat
 
     assert [str(comment) for comment in tasks[0].comments] == ["Edited text"]
     client.tasks.stories.assert_called_once()
+
+
+def test_existing_comment_is_never_readded() -> None:
+    side, client = _side()
+    client.tasks.stories.return_value = [
+        {"gid": "s1", "type": "comment", "text": "Existing comment"},
+    ]
+
+    side._add_missing_comments("1", ["Existing comment"])
+
+    client.tasks.add_comment.assert_not_called()
+
+
+def test_existing_comment_match_ignores_line_endings_and_outer_whitespace() -> None:
+    side, client = _side()
+    client.tasks.stories.return_value = [
+        {
+            "gid": "s1",
+            "type": "comment",
+            "text": "  First line\r\nSecond line   ",
+        },
+    ]
+
+    side._add_missing_comments("1", ["First line\nSecond line"])
+
+    client.tasks.add_comment.assert_not_called()
+
+
+def test_duplicate_desired_annotations_create_at_most_one_comment() -> None:
+    side, client = _side()
+    client.tasks.stories.side_effect = [[], []]
+
+    side._add_missing_comments("1", ["New comment", "New comment"])
+
+    client.tasks.add_comment.assert_called_once_with("1", text="New comment")
+
+
+def test_live_recheck_prevents_race_duplicate() -> None:
+    side, client = _side()
+    client.tasks.stories.side_effect = [
+        [],
+        [{"gid": "s1", "type": "comment", "text": "New comment"}],
+    ]
+
+    side._add_missing_comments("1", ["New comment"])
+
+    client.tasks.add_comment.assert_not_called()
+
+
+def test_comment_write_does_not_depend_on_local_cache(tmp_path) -> None:
+    missing_cache = tmp_path / "missing-comments.json"
+    side = AsanaSide(
+        client=MagicMock(),
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=missing_cache,
+    )
+    side._client.tasks.stories.return_value = [
+        {"gid": "s1", "type": "comment", "text": "Already remote"},
+    ]
+
+    side._add_missing_comments("1", ["Already remote"])
+
+    side._client.tasks.add_comment.assert_not_called()
+
+
+def test_server_success_then_client_error_does_not_duplicate_on_retry() -> None:
+    side, client = _side()
+    client.tasks.stories.side_effect = [[], []]
+    client.tasks.add_comment.side_effect = RuntimeError("connection dropped")
+
+    try:
+        side._add_missing_comments("1", ["Maybe created"])
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Expected simulated network failure")
+
+    client.tasks.add_comment.reset_mock()
+    client.tasks.add_comment.side_effect = None
+    client.tasks.stories.side_effect = [
+        [{"gid": "s1", "type": "comment", "text": "Maybe created"}],
+    ]
+
+    side._add_missing_comments("1", ["Maybe created"])
+
+    client.tasks.add_comment.assert_not_called()
+
+
+def test_new_task_creation_does_not_add_comments_before_return() -> None:
+    side, client = _side()
+    client.tasks.create_task.return_value = {"gid": "new-task"}
+    client.tasks.find_by_id.return_value = {
+        **_raw_task("new-task"),
+        "name": "[Client] Created task",
+    }
+    client.tasks.stories.return_value = []
+    source = AsanaTask.from_raw_task(
+        {
+            **_raw_task("source"),
+            "name": "[Client] Created task",
+            "comments": ["Comment after checkpoint"],
+        },
+    )
+
+    created = side.add_item(source)
+
+    assert created.gid == "new-task"
+    client.tasks.add_comment.assert_not_called()
+
+
+def test_post_create_sync_adds_comments_after_task_identity_exists() -> None:
+    side, client = _side()
+    client.tasks.stories.side_effect = [[], []]
+    source = AsanaTask.from_raw_task(
+        {
+            **_raw_task("source"),
+            "comments": ["Comment after checkpoint"],
+        },
+    )
+
+    side.post_create_sync("new-task", source)
+
+    client.tasks.add_comment.assert_called_once_with(
+        "new-task",
+        text="Comment after checkpoint",
+    )

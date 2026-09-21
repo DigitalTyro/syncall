@@ -184,7 +184,7 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     def record_prefs() -> None:
         events.append("prefs")
 
-    source_side.record_asana_gid.side_effect = record_identity
+    source_side.record_asana_gid.side_effect = lambda *_: (record_identity(), True)[1]
     target_side.post_create_sync.side_effect = record_comments
     source_side.clear_pending_asana_comments.side_effect = record_clear
     item = MagicMock()
@@ -355,7 +355,7 @@ def test_new_asana_task_comments_continue_if_one_identity_checkpoint_succeeds(tm
     target_side = MagicMock()
     source_side = MagicMock()
     target_side.add_item.return_value = {"gid": "asana-new", "name": "Created"}
-    source_side.record_asana_gid.side_effect = RuntimeError("Taskwarrior write failed")
+    source_side.record_asana_gid.return_value = False
     item = MagicMock()
     item.source_tw_uuid = "tw-source"
 

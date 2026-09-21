@@ -385,6 +385,18 @@ class TaskWarriorSide(SyncSide):
 
         return cast("ItemType", new_item)
 
+    def record_asana_gid(self, item_id: str, asana_gid: str) -> None:
+        """Persist an Asana GID on a Taskwarrior task immediately."""
+        self._tw._execute(  # noqa: SLF001
+            str(item_id),
+            "modify",
+            f"{tw_asana_gid_key}:{asana_gid}",
+        )
+        cached = self._items_cache.get(str(item_id))
+        if cached is not None:
+            cached[tw_asana_gid_key] = str(asana_gid)  # type: ignore[literal-required]
+        self._reload_items = True
+
     def backfill_asana_gids(self, mapping: Mapping[str, str]) -> int:
         """Persist Asana task identity inside Taskwarrior so mappings are recoverable."""
         if not mapping:

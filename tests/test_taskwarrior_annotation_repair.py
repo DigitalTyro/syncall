@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from syncall.taskwarrior.taskwarrior_side import TaskWarriorSide
@@ -16,7 +17,7 @@ def _side_with_export(raw_task: dict) -> tuple[TaskWarriorSide, MagicMock, list[
 
     def capture_import(command: str, path: str) -> tuple[str, str]:
         assert command == "import"
-        with open(path, encoding="utf-8") as handle:
+        with Path(path).open(encoding="utf-8") as handle:
             imported.append(json.loads(handle.read()))
         return "", ""
 

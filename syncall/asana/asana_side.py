@@ -237,17 +237,40 @@ class AsanaSide(SyncSide):
             self._comment_cache_dirty = True
         return comments
 
+    @staticmethod
+    def _comment_key(comment: str | AsanaComment) -> str:
+        text = str(comment).replace("\r\n", "\n").replace("\r", "\n")
+        return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
     def _add_missing_comments(
         self,
         item_id: AsanaGID,
         comments: Sequence[str | AsanaComment],
     ) -> None:
-        existing = {comment.text for comment in self._get_comments(item_id)}
+        existing = {
+            self._comment_key(comment)
+            for comment in self._get_comments(item_id)
+            if self._comment_key(comment)
+        }
         for comment in comments:
             comment_text = str(comment).strip()
-            if comment_text and comment_text not in existing:
-                self._client.tasks.add_comment(item_id, text=comment_text)
-                existing.add(comment_text)
+            comment_key = self._comment_key(comment)
+            if not comment_key or comment_key in existing:
+                continue
+
+            # Never trust cache/state for a write. Re-read live Asana stories immediately
+            # before creating a comment so stale state cannot create duplicates.
+            live_existing = {
+                self._comment_key(remote_comment)
+                for remote_comment in self._get_comments(item_id)
+                if self._comment_key(remote_comment)
+            }
+            existing.update(live_existing)
+            if comment_key in existing:
+                continue
+
+            self._client.tasks.add_comment(item_id, text=comment_text)
+            existing.add(comment_key)
 
     def get_item(self, item_id: AsanaGID) -> AsanaTask | None:
         """Get a single task based on the given ID."""

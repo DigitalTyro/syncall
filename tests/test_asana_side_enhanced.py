@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from syncall.asana.asana_side import AsanaSide
+from syncall.asana.asana_task import AsanaComment, AsanaTask
 
 
 def _raw_task(gid: str = "1", name: str = "[Client] Test task") -> dict:
@@ -284,3 +285,27 @@ def test_legacy_empty_comment_cache_upgrades_without_refetch(tmp_path) -> None:
     assert tasks[0].comments == ()
     client.tasks.stories.assert_not_called()
     assert '"version": 2' in cache_path.read_text()
+
+
+def test_comment_metadata_does_not_create_false_sync_change() -> None:
+    legacy = AsanaTask.from_raw_task({**_raw_task("1"), "comments": ["Same comment"]})
+    legacy.comments = ("Same comment",)  # type: ignore[assignment]
+    structured = AsanaTask.from_raw_task(
+        {
+            **_raw_task("1"),
+            "comments": [
+                AsanaComment.from_raw(
+                    {
+                        "created_at": "2025-01-02T10:30:00Z",
+                        "gid": "story-1",
+                        "text": "Same comment",
+                    },
+                ),
+            ],
+        },
+    )
+
+    assert AsanaSide.items_are_identical(legacy, structured)
+
+    structured.comments = (AsanaComment(text="Changed comment"),)
+    assert not AsanaSide.items_are_identical(legacy, structured)

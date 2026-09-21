@@ -201,8 +201,14 @@ def test_record_asana_gid_persists_identity_immediately() -> None:
 
     side.record_asana_gid("tw-1", "asana-1")
 
-    tw._execute.assert_called_once_with("tw-1", "modify", "asana_gid:asana-1")
+    tw._execute.assert_called_once_with(
+        "tw-1",
+        "modify",
+        "asana_gid:asana-1",
+        "asana_pending_comments:1",
+    )
     assert side._items_cache["tw-1"]["asana_gid"] == "asana-1"
+    assert side._items_cache["tw-1"]["asana_pending_comments"] == "1"
     assert side._reload_items is True
 
 
@@ -282,3 +288,29 @@ def test_backfill_asana_gids_is_noop_when_identity_is_already_present() -> None:
 
     assert changed == 0
     tw._execute.assert_not_called()
+
+
+def test_clear_pending_asana_comments_removes_recovery_marker() -> None:
+    side = TaskWarriorSide.__new__(TaskWarriorSide)
+    tw = MagicMock()
+    side._tw = tw
+    side._items_cache = {
+        "tw-1": {
+            "uuid": "tw-1",
+            "description": "Task",
+            "status": "pending",
+            "asana_gid": "asana-1",
+            "asana_pending_comments": "1",
+        },
+    }
+    side._reload_items = False
+
+    side.clear_pending_asana_comments("tw-1")
+
+    tw._execute.assert_called_once_with(
+        "tw-1",
+        "modify",
+        "asana_pending_comments:",
+    )
+    assert "asana_pending_comments" not in side._items_cache["tw-1"]
+    assert side._reload_items is True

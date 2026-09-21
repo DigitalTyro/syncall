@@ -282,6 +282,26 @@ class Aggregator:
         self._side_A.finish()
         self._side_B.finish()
 
+    def recover_correspondences(self, recovered: dict[str, str]) -> int:
+        """Merge independently recoverable B→A identities into the correspondence map."""
+        recovered_count = 0
+        for id_B, id_A in recovered.items():
+            existing_A = self._B_to_A_map.get(id_B)
+            existing_B = self._B_to_A_map.inverse.get(id_A)
+            if existing_A == id_A:
+                continue
+            if existing_A is not None or existing_B is not None:
+                raise RuntimeError(
+                    f"Conflicting recovered correspondence: {id_B!r} -> {id_A!r}.",
+                )
+            self._B_to_A_map[id_B] = id_A
+            recovered_count += 1
+        return recovered_count
+
+    def flush_correspondences(self) -> None:
+        """Persist correspondence changes immediately rather than waiting for process exit."""
+        self.prefs_manager.flush_config(self.prefs_manager.config_file)
+
     def _count_sync_operations(self, changes_A: SideChanges, changes_B: SideChanges) -> int:
         """Count the number of create/update/delete operations the synchronizer will perform."""
         touched_A = changes_A.modified.union(changes_A.deleted)

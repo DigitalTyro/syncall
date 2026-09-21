@@ -32,7 +32,9 @@ class TestTwAsanaConversions(GenericTestCase):
             assert asana_task_out[key] == value, key
 
         assert asana_task_out.html_notes == "<body></body>"
-        assert asana_task_out.comments == tuple(str(a) for a in self.tw_item["annotations"])
+        assert [str(comment) for comment in asana_task_out.comments] == [
+            str(annotation) for annotation in self.tw_item["annotations"]
+        ]
 
     def test_asana_tw_basic_convert(self):
         """Basic Asana -> TW conversion."""
@@ -136,7 +138,28 @@ class TestTwAsanaConversions(GenericTestCase):
         assert tw_item["annotations"] == ["First comment", "Second comment"]
 
         round_trip = convert_tw_to_asana(tw_item)
-        assert round_trip.comments == ("First comment", "Second comment")
+        assert [str(comment) for comment in round_trip.comments] == [
+            "First comment",
+            "Second comment",
+        ]
+
+    def test_asana_comment_metadata_is_carried_to_taskwarrior_annotations(self):
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["comments"] = [
+            {
+                "created_at": "2024-03-04T12:34:56Z",
+                "gid": "story-123",
+                "text": "Historical comment",
+            },
+        ]
+
+        tw_item = convert_asana_to_tw(asana_task)
+
+        annotation = tw_item["annotations"][0]
+        assert str(annotation) == "Historical comment"
+        assert annotation.source_id == "story-123"
+        assert annotation.source_entry.isoformat() == "2024-03-04T12:34:56+00:00"
 
     def test_blank_asana_description_is_skipped(self):
         self.load_sample_items()

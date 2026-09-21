@@ -1,9 +1,7 @@
 from collections.abc import Sequence
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from item_synchronizer.types import ID
-
 from syncall.aggregator import Aggregator
 from syncall.sync_side import ItemType, SyncSide
 
@@ -56,13 +54,13 @@ class MockSide(SyncSide):
 
 
 
-def test_missing_filtered_item_that_still_exists_is_not_deleted() -> None:
+def test_missing_filtered_item_that_still_exists_is_not_deleted(tmp_path) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper = MagicMock()
     side = MagicMock()
     side.get_item.return_value = {"id": "1"}
 
-    aggregator._get_serdes_dirs = MagicMock(return_value=(Path("/tmp"), Path("/tmp")))
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
     aggregator._get_ids_map = MagicMock(return_value={"1": "other-id"})
     aggregator._get_side_instances = MagicMock(return_value=(side, MagicMock()))
 
@@ -72,13 +70,13 @@ def test_missing_filtered_item_that_still_exists_is_not_deleted() -> None:
     side.get_item.assert_called_once_with("1")
 
 
-def test_missing_filtered_item_that_is_gone_is_deleted() -> None:
+def test_missing_filtered_item_that_is_gone_is_deleted(tmp_path) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper = MagicMock()
     side = MagicMock()
     side.get_item.return_value = None
 
-    aggregator._get_serdes_dirs = MagicMock(return_value=(Path("/tmp"), Path("/tmp")))
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
     aggregator._get_ids_map = MagicMock(return_value={"1": "other-id"})
     aggregator._get_side_instances = MagicMock(return_value=(side, MagicMock()))
 

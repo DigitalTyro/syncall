@@ -26,6 +26,7 @@ TASK_FIELDS = [
 ]
 STORY_FIELDS = ["gid", "resource_subtype", "text", "type"]
 
+
 class AsanaSide(SyncSide):
     """Wrapper class to add/modify/delete Asana tasks."""
 

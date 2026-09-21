@@ -209,6 +209,7 @@ ignore = [
   "SLF001",
   "TRY003",
   "COM812",
+  "CPY001",
 ]
 exclude = []
 

@@ -59,6 +59,7 @@ class TaskwarriorRawItem(TypedDict, total=False):
     urgency: float
     client: str
     notes: str
+    asana_gid: str
     annotations: list[str]
 
 

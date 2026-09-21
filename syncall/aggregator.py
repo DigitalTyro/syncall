@@ -225,7 +225,9 @@ class Aggregator:
             self._items_B = {
                 str(item[self._helper_B.id_key]): item for item in self._side_B.get_all_items()
             }
-        console.print(\n            f"[bold]Found {len(self._items_B):,} Taskwarrior tasks in sync scope[/bold]"\n        )
+        console.print(
+            f"[bold]Found {len(self._items_B):,} Taskwarrior tasks in sync scope[/bold]"
+        )
 
         changes_A = self.detect_changes(self._helper_A, self._items_A)
         changes_B = self.detect_changes(self._helper_B, self._items_B)

@@ -17,7 +17,7 @@ echo "==> Pulling latest master"
 git pull --ff-only origin master
 
 echo "==> Installing current syncall code into .venv"
-"$PYTHON" -m pip install --upgrade --force-reinstall --no-deps .
+"$PYTHON" -m pip install --upgrade --force-reinstall .
 
 echo "==> Checking dependencies"
 "$PYTHON" -m pip check

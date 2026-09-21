@@ -109,4 +109,4 @@ class TestAsanaTask(GenericTestCase):
         asana_task = AsanaTask.from_raw_task(valid_raw_task)
 
         assert asana_task.html_notes == valid_raw_task["html_notes"]
-        assert asana_task.comments == ("First", "Second")
+        assert [str(comment) for comment in asana_task.comments] == ["First", "Second"]

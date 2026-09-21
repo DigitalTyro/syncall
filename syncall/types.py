@@ -60,6 +60,7 @@ class TaskwarriorRawItem(TypedDict, total=False):
     client: str
     notes: str
     asana_gid: str
+    asana_pending_comments: str
     annotations: list[str]
 
 

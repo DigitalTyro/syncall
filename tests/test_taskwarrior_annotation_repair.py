@@ -199,8 +199,9 @@ def test_record_asana_gid_persists_identity_immediately() -> None:
     }
     side._reload_items = False
 
-    side.record_asana_gid("tw-1", "asana-1")
+    recorded = side.record_asana_gid("tw-1", "asana-1")
 
+    assert recorded is True
     tw._execute.assert_called_once_with(
         "tw-1",
         "modify",

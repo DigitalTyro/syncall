@@ -173,6 +173,7 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
 
     source_side.record_asana_gid.side_effect = lambda *_: events.append("identity")
     target_side.post_create_sync.side_effect = lambda *_: events.append("comments")
+    source_side.clear_pending_asana_comments.side_effect = lambda *_: events.append("clear")
     item = MagicMock()
     item.source_tw_uuid = "tw-source"
 
@@ -186,8 +187,9 @@ def test_asana_create_checkpoints_source_identity_before_comments(tmp_path) -> N
     created_id = aggregator.inserter_to(item, helper)
 
     assert created_id == "asana-new"
-    assert events == ["identity", "comments"]
+    assert events == ["identity", "comments", "clear"]
     source_side.record_asana_gid.assert_called_once_with("tw-source", "asana-new")
+    source_side.clear_pending_asana_comments.assert_called_once_with("tw-source")
 
 
 def _minimal_sync_aggregator(tmp_path) -> Aggregator:
@@ -281,3 +283,47 @@ def test_sync_commits_source_snapshot_only_after_successful_writes(tmp_path) -> 
         pickle_dump_mock.assert_called_once()
 
     aggregator.flush_correspondences.assert_called_once()
+
+
+def test_missing_snapshot_is_safely_baselined_without_remote_change(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    helper.name = "Asana"
+    side = MagicMock()
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._get_ids_map = MagicMock(return_value={"a1": "b1"})
+    aggregator._get_side_instances = MagicMock(return_value=(side, MagicMock()))
+    aggregator._item_has_update = MagicMock()
+
+    item = {"gid": "a1", "name": "Current remote state"}
+    changes = aggregator.detect_changes(helper, {"a1": item})
+
+    assert changes.modified == set()
+    assert changes.deleted == set()
+    assert (tmp_path / "a1").is_file()
+    aggregator._item_has_update.assert_not_called()
+    side.get_item.assert_not_called()
+
+
+def test_authoritative_written_snapshot_is_not_overwritten_by_pre_sync_cache(tmp_path) -> None:
+    aggregator = _minimal_sync_aggregator(tmp_path)
+    changes_A = MagicMock()
+    changes_A.new = set()
+    changes_A.modified = {"a1"}
+    changes_A.deleted = set()
+    changes_B = MagicMock()
+    changes_B.new = set()
+    changes_B.modified = set()
+    changes_B.deleted = set()
+    aggregator.detect_changes = MagicMock(side_effect=[changes_A, changes_B])
+    aggregator._count_sync_operations = MagicMock(return_value=1)
+
+    def write_authoritative_snapshot(**_kwargs) -> None:
+        aggregator._written_serdes.add(("Asana", "a1"))
+
+    aggregator._synchronizer.sync.side_effect = write_authoritative_snapshot
+
+    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
+        aggregator.sync()
+
+        pickle_dump_mock.assert_not_called()

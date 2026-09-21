@@ -95,3 +95,6 @@ test-tw-gcal-sync.json
 a
 syncall/__vf
 syncall/__version__.py
+
+# Local secrets
+.env

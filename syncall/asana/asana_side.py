@@ -1,6 +1,9 @@
+import json
 from collections.abc import Sequence
+from pathlib import Path
 
 import asana
+from bubop import logger
 
 from syncall.asana.asana_task import AsanaTask
 from syncall.asana.rich_text import asana_html_to_markdown
@@ -25,10 +28,19 @@ STORY_FIELDS = ["gid", "resource_subtype", "text", "type"]
 class AsanaSide(SyncSide):
     """Wrapper class to add/modify/delete Asana tasks."""
 
-    def __init__(self, client: asana.Client, task_gid: AsanaGID, workspace_gid: AsanaGID):
+    def __init__(
+        self,
+        client: asana.Client,
+        task_gid: AsanaGID,
+        workspace_gid: AsanaGID,
+        comment_cache_path: Path | None = None,
+    ):
         self._client = client
         self._task_gid = task_gid
         self._workspace_gid = workspace_gid
+        self._comment_cache_path = comment_cache_path
+        self._comment_cache = self._load_comment_cache()
+        self._comment_cache_dirty = False
 
         super().__init__(name="Asana", fullname="Asana")
 
@@ -36,7 +48,29 @@ class AsanaSide(SyncSide):
         pass
 
     def finish(self):
-        pass
+        self._save_comment_cache()
+
+    def _load_comment_cache(self) -> dict[str, dict]:
+        if self._comment_cache_path is None or not self._comment_cache_path.is_file():
+            return {}
+
+        try:
+            return json.loads(self._comment_cache_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                f"Could not read Asana comment cache at {self._comment_cache_path}; rebuilding it.",
+            )
+            return {}
+
+    def _save_comment_cache(self) -> None:
+        if self._comment_cache_path is None or not self._comment_cache_dirty:
+            return
+
+        self._comment_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self._comment_cache_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(self._comment_cache, ensure_ascii=False))
+        temp_path.replace(self._comment_cache_path)
+        self._comment_cache_dirty = False
 
     def _get_follower_task_summaries(self) -> list[dict]:
         """Fetch all follower-only tasks using Asana search's manual pagination."""
@@ -57,7 +91,7 @@ class AsanaSide(SyncSide):
                 self._client.tasks.search_in_workspace(
                     self._workspace_gid,
                     params=params,
-                    fields=["gid", "created_at"],
+                    fields=TASK_FIELDS,
                     page_size=GET_TASKS_PAGE_SIZE,
                 ),
             )
@@ -80,6 +114,7 @@ class AsanaSide(SyncSide):
         assigned = self._client.tasks.find_all(
             assignee="me",
             workspace=self._workspace_gid,
+            fields=TASK_FIELDS,
             page_size=GET_TASKS_PAGE_SIZE,
         )
 
@@ -101,10 +136,21 @@ class AsanaSide(SyncSide):
         results = []
 
         if self._task_gid is None:
-            for task in self._get_task_summaries():
-                detailed_task = self.get_item(task["gid"])
-                if detailed_task is not None:
-                    results.append(detailed_task)
+            raw_tasks = self._get_task_summaries()
+            total = len(raw_tasks)
+            logger.info(f"Discovered {total} Asana tasks. Loading comments...")
+
+            for index, raw_task in enumerate(raw_tasks, start=1):
+                raw_task = dict(raw_task)
+                raw_task["comments"] = self._get_cached_comments(raw_task)
+                results.append(AsanaTask.from_raw_task(raw_task))
+
+                if index % 50 == 0 or index == total:
+                    logger.info(f"Prepared Asana tasks: {index}/{total}")
+                if index % 100 == 0:
+                    self._save_comment_cache()
+
+            self._save_comment_cache()
         else:
             task = self.get_item(self._task_gid)
             if task is not None:
@@ -129,6 +175,23 @@ class AsanaSide(SyncSide):
                 comments.append(str(text))
         return tuple(comments)
 
+    def _get_cached_comments(self, raw_task: dict) -> tuple[str, ...]:
+        item_id = str(raw_task["gid"])
+        modified_at = str(raw_task.get("modified_at") or "")
+
+        cached = self._comment_cache.get(item_id)
+        if cached is not None and cached.get("modified_at") == modified_at:
+            return tuple(str(comment) for comment in cached.get("comments", ()))
+
+        comments = self._get_comments(item_id)
+        if self._comment_cache_path is not None:
+            self._comment_cache[item_id] = {
+                "modified_at": modified_at,
+                "comments": list(comments),
+            }
+            self._comment_cache_dirty = True
+        return comments
+
     def _add_missing_comments(self, item_id: AsanaGID, comments: Sequence[str]) -> None:
         existing = set(self._get_comments(item_id))
         for comment in comments:
@@ -141,7 +204,7 @@ class AsanaSide(SyncSide):
         """Get a single task based on the given ID."""
         try:
             raw_task = self._client.tasks.find_by_id(item_id, fields=TASK_FIELDS)
-            raw_task["comments"] = self._get_comments(item_id)
+            raw_task["comments"] = self._get_cached_comments(raw_task)
             return AsanaTask.from_raw_task(raw_task)
         except asana.error.ForbiddenError as exc:
             raise RuntimeError(

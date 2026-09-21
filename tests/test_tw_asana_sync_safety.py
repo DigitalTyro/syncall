@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from syncall.scripts.tw_asana_sync import _resume_pending_asana_comments
+from syncall.scripts.tw_asana_sync import resume_pending_asana_comments
 
 
 def _pending_task() -> dict:
@@ -22,10 +22,16 @@ def test_pending_comment_recovery_confirms_remote_before_clearing_marker() -> No
     tw_side = MagicMock()
     asana_side = MagicMock()
     events: list[str] = []
-    asana_side.ensure_comments.side_effect = lambda *_: events.append("remote")
-    tw_side.clear_pending_asana_comments.side_effect = lambda *_: events.append("clear")
+    def record_remote(*_args) -> None:
+        events.append("remote")
 
-    resumed = _resume_pending_asana_comments(
+    def record_clear(*_args) -> None:
+        events.append("clear")
+
+    asana_side.ensure_comments.side_effect = record_remote
+    tw_side.clear_pending_asana_comments.side_effect = record_clear
+
+    resumed = resume_pending_asana_comments(
         tw_side,
         asana_side,
         [_pending_task()],
@@ -44,7 +50,7 @@ def test_pending_comment_recovery_keeps_marker_when_remote_check_fails() -> None
     asana_side.ensure_comments.side_effect = RuntimeError("Asana unavailable")
 
     with pytest.raises(RuntimeError, match="Asana unavailable"):
-        _resume_pending_asana_comments(
+        resume_pending_asana_comments(
             tw_side,
             asana_side,
             [_pending_task()],
@@ -59,7 +65,7 @@ def test_non_pending_tasks_are_not_used_for_outbound_comment_recovery() -> None:
     task = _pending_task()
     task.pop("asana_pending_comments")
 
-    resumed = _resume_pending_asana_comments(
+    resumed = resume_pending_asana_comments(
         tw_side,
         asana_side,
         [task],

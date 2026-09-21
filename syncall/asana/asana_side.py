@@ -143,8 +143,10 @@ class AsanaSide(SyncSide):
             raw_task = self._client.tasks.find_by_id(item_id, fields=TASK_FIELDS)
             raw_task["comments"] = self._get_comments(item_id)
             return AsanaTask.from_raw_task(raw_task)
-        except asana.error.ForbiddenError:
-            return None
+        except asana.error.ForbiddenError as exc:
+            raise RuntimeError(
+                f"Asana task {item_id} is not accessible; refusing to treat it as deleted.",
+            ) from exc
         except asana.error.NotFoundError:
             return None
 

@@ -365,10 +365,34 @@ class Aggregator:
 
             source_tw_uuid = getattr(item, "source_tw_uuid", None)
             if source_tw_uuid is not None:
+                source_tw_uuid = str(source_tw_uuid)
                 _, source_side = self._get_side_instances(helper)
+                checkpoint_errors = []
+
+                try:
+                    existing_asana_id = self._B_to_A_map.get(source_tw_uuid)
+                    if existing_asana_id not in (None, item_created_id):
+                        raise RuntimeError(
+                            f"Taskwarrior task {source_tw_uuid} is already mapped to "
+                            f"Asana task {existing_asana_id}.",
+                        )
+                    self._B_to_A_map[source_tw_uuid] = item_created_id
+                    self.flush_correspondences()
+                except Exception as exc:
+                    checkpoint_errors.append(exc)
+
                 record_asana_gid = getattr(source_side, "record_asana_gid", None)
                 if callable(record_asana_gid):
-                    record_asana_gid(str(source_tw_uuid), item_created_id)
+                    try:
+                        record_asana_gid(source_tw_uuid, item_created_id)
+                    except Exception as exc:
+                        checkpoint_errors.append(exc)
+
+                if len(checkpoint_errors) == 2:
+                    raise RuntimeError(
+                        "Could not durably checkpoint the new Asana task identity; "
+                        "refusing to create comments.",
+                    ) from checkpoint_errors[-1]
 
             post_create_sync = getattr(item_side, "post_create_sync", None)
             if callable(post_create_sync):

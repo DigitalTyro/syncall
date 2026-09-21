@@ -172,7 +172,15 @@ def fetch_app_configuration(
     """
     config_fname = determine_app_config_fname(side_A_name, side_B_name)
     with PrefsManager(app_name=app_name(), config_fname=config_fname) as prefs_manager:
-        if combination not in prefs_manager:
+        candidates = [combination]
+        if not combination.endswith((".yaml", ".yml")):
+            candidates.extend([f"{combination}.yaml", f"{combination}.yml"])
+
+        resolved_combination = next(
+            (candidate for candidate in candidates if candidate in prefs_manager),
+            None,
+        )
+        if resolved_combination is None:
             # config not found ----------------------------------------------------------------
             existing_keys = prefs_manager.keys()
             raise RuntimeError(
@@ -183,8 +191,11 @@ def fetch_app_configuration(
             )
 
         # config combination found ------------------------------------------------------------
-        logger.info(f"\n\nLoading configuration - {prefs_manager.config_file} | {combination}")
-        return prefs_manager[combination]
+        logger.info(
+            f"\n\nLoading configuration - "
+            f"{prefs_manager.config_file} | {resolved_combination}",
+        )
+        return prefs_manager[resolved_combination]
 
 
 def cache_or_reuse_cached_combination(

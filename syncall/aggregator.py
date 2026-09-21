@@ -198,9 +198,24 @@ class Aggregator:
             potentially_modified_ids = potentially_modified_ids.difference(deleted)
             for item_id in potentially_modified_ids:
                 item = items[item_id]
-                cached_item = pickle_load(serdes_dir / item_id)
-                if self._item_has_update(prev_item=cached_item, new_item=item, helper=helper):
-                    modified.add(item_id)
+                cached_path = serdes_dir / item_id
+                if not cached_path.is_file():
+                    # Identity may be recoverable even if local sync snapshots were deleted.
+                    # Baseline the live item rather than guessing a sync direction and writing
+                    # remote data from incomplete local history.
+                    logger.warning(
+                        f"[{helper}] Missing sync snapshot for mapped item {item_id}; "
+                        "baselining current state without propagating a change.",
+                    )
+                    pickle_dump(item, cached_path)
+                else:
+                    cached_item = pickle_load(cached_path)
+                    if self._item_has_update(
+                        prev_item=cached_item,
+                        new_item=item,
+                        helper=helper,
+                    ):
+                        modified.add(item_id)
                 if progress_task is not None:
                     progress.advance(progress_task)
         finally:

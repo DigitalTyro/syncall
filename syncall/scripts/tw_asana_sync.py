@@ -103,9 +103,10 @@ def main(  # noqa: PLR0915, C901, PLR0912
         )
         tw_tags = app_config["tw_tags"]
         tw_project = app_config["tw_project"]
-        tw_sync_all_tasks = app_config["tw_sync_all_tasks"]
+        tw_sync_all_tasks = app_config.get("tw_sync_all_tasks", False)
         asana_workspace_gid = app_config["asana_workspace_gid"]
         asana_task_gid = app_config["asana_task_gid"]
+        resolution_strategy = app_config.get("resolution_strategy", resolution_strategy)
     # combination manually specified ----------------------------------------------------------
     else:
         inform_about_config = True
@@ -114,7 +115,9 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "asana_workspace_gid": asana_workspace_gid,
                 "tw_project": tw_project,
                 "tw_tags": tw_tags,
+                "tw_sync_all_tasks": tw_sync_all_tasks,
                 "asana_task_gid": asana_task_gid,
+                "resolution_strategy": resolution_strategy,
             },
             config_fname="tw_asana_configs",
             custom_combination_savename=custom_combination_savename,
@@ -190,6 +193,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "Asana Workspace GID": asana_workspace_gid,
                 "Asana Workspace Name": asana_workspace_name,
                 "Asana Task GID": asana_task_gid,
+                "Resolution Strategy": resolution_strategy,
             },
             prefix="\n\n",
             suffix="\n",

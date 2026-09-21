@@ -43,6 +43,7 @@ dependencies = [
   "loguru>=0.5.3,<0.6",
   "python-dateutil>=2.9.0.post0,<3",
   "rfc3339>=6.2,<7",
+  "rich>=13.7,<15",
   "item-synchronizer>=1.1.5,<2",
   "bubop==0.1.12",
 ]

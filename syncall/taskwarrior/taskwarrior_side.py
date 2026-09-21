@@ -11,6 +11,7 @@ from uuid import UUID
 
 from bubop import logger, parse_datetime
 from taskw_ng import TaskWarrior
+from taskw_ng.exceptions import TaskwarriorError
 from taskw_ng.warrior import TASKRC
 from xdg import xdg_config_home
 
@@ -433,19 +434,27 @@ class TaskWarriorSide(SyncSide):
 
         return cast("ItemType", new_item)
 
-    def record_asana_gid(self, item_id: str, asana_gid: str) -> None:
+    def record_asana_gid(self, item_id: str, asana_gid: str) -> bool:
         """Persist Asana identity and a crash-recovery marker immediately."""
-        self._tw._execute(
-            str(item_id),
-            "modify",
-            f"{tw_asana_gid_key}:{asana_gid}",
-            f"{tw_asana_pending_comments_key}:1",
-        )
+        try:
+            self._tw._execute(
+                str(item_id),
+                "modify",
+                f"{tw_asana_gid_key}:{asana_gid}",
+                f"{tw_asana_pending_comments_key}:1",
+            )
+        except (OSError, TaskwarriorError):
+            logger.opt(exception=True).warning(
+                f"Could not persist Asana identity on Taskwarrior task {item_id}.",
+            )
+            return False
+
         cached = self._items_cache.get(str(item_id))
         if cached is not None:
             cached[tw_asana_gid_key] = str(asana_gid)  # type: ignore[literal-required]
             cached[tw_asana_pending_comments_key] = "1"  # type: ignore[literal-required]
         self._reload_items = True
+        return True
 
     def clear_pending_asana_comments(self, item_id: str) -> None:
         """Clear the recovery marker after all outbound comments are confirmed remote."""

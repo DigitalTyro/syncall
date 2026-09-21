@@ -226,7 +226,7 @@ class AsanaSide(SyncSide):
             elif not cached_comments:
                 cached["version"] = COMMENT_CACHE_VERSION
                 cached["checked_at"] = datetime.datetime.now(
-                    datetime.timezone.utc,
+                    datetime.UTC,
                 ).isoformat()
                 self._comment_cache_dirty = True
                 return ()

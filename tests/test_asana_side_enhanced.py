@@ -573,3 +573,78 @@ def test_comment_identity_collapses_whitespace_and_unicode_equivalents() -> None
     )
 
     client.tasks.add_comment.assert_not_called()
+
+
+def test_deleted_comment_invalidates_cache_when_task_modified_at_changes(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"version":2,"modified_at":"2026-09-19T12:30:00Z",'
+        '"checked_at":"2026-09-21T12:00:00+00:00","comments":['
+        '{"gid":"story-1","text":"Deleted comment","created_at":"2025-01-02T10:30:00+00:00"}]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = []
+
+    tasks = side.get_all_items()
+
+    assert tasks[0].comments == ()
+    client.tasks.stories.assert_called_once()
+
+
+def test_naive_checked_at_is_treated_as_stale(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text(
+        '{"1":{"version":2,"modified_at":"2026-09-20T12:30:00Z",'
+        '"checked_at":"2026-09-21T12:00:00","comments":['
+        '{"gid":"story-1","text":"Cached","created_at":"2025-01-02T10:30:00+00:00"}]}}',
+    )
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = [
+        {
+            "created_at": "2025-01-02T10:30:00Z",
+            "gid": "story-1",
+            "type": "comment",
+            "text": "Fresh",
+        },
+    ]
+
+    tasks = side.get_all_items()
+
+    assert [str(comment) for comment in tasks[0].comments] == ["Fresh"]
+    client.tasks.stories.assert_called_once()
+
+
+def test_non_object_comment_cache_is_rebuilt(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    cache_path.write_text('["not", "a", "mapping"]')
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    client.tasks.stories.return_value = []
+
+    tasks = side.get_all_items()
+
+    assert tasks[0].comments == ()
+    client.tasks.stories.assert_called_once()

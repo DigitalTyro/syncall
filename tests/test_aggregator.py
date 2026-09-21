@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from unittest.mock import MagicMock
 
+from bidict import bidict
 from item_synchronizer.types import ID
 from syncall.aggregator import Aggregator
 from syncall.sync_side import ItemType, SyncSide
@@ -108,8 +109,6 @@ def test_item_getter_uses_current_snapshot_before_live_side() -> None:
 
 def test_count_sync_operations_counts_conflict_once() -> None:
     aggregator = Aggregator.__new__(Aggregator)
-    aggregator._B_to_A_map = {"tw-1": "asana-1"}
-
     changes_A = MagicMock()
     changes_A.new = {"asana-new"}
     changes_A.modified = {"asana-1"}
@@ -119,8 +118,6 @@ def test_count_sync_operations_counts_conflict_once() -> None:
     changes_B.new = {"tw-new"}
     changes_B.modified = {"tw-1"}
     changes_B.deleted = set()
-
-    from bidict import bidict
 
     aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
 

@@ -404,6 +404,7 @@ class TaskWarriorSide(SyncSide):
         d = dict(t)
         d.update(changes)
         self._tw.task_update(d)
+        self._reload_items = True
 
     def add_item(self, item: ItemType) -> ItemType:
         item = cast("TaskwarriorRawItem", item)

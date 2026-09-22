@@ -15,7 +15,7 @@ from syncall.types import AsanaGID
 
 GET_TASKS_PAGE_SIZE = 100
 COMMENT_CACHE_MAX_AGE = datetime.timedelta(days=30)
-COMMENT_CACHE_VERSION = 2
+COMMENT_CACHE_VERSION = 3
 TASK_FIELDS = [
     "completed",
     "completed_at",

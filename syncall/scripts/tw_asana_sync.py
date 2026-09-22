@@ -320,7 +320,13 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "Taskwarrior→Asana task(s).",
             )
 
-        existing_tw_items = tw_side.get_all_items()
+        if resumed_pending:
+            with console.status(
+                "[bold]Refreshing Taskwarrior snapshot after recovery...[/bold]",
+                spinner="dots",
+            ):
+                existing_tw_items = tw_side.get_all_items()
+
         recovered = {
             str(item["uuid"]): str(item["asana_gid"])
             for item in existing_tw_items
@@ -372,7 +378,13 @@ def main(  # noqa: PLR0915, C901, PLR0912
         # Annotation entry timestamps are not part of taskw-ng's normal annotate/update path.
         # Reconcile them separately from cached Asana story metadata so interrupted migrations
         # are safe to resume and future runs become cheap no-ops once dates are correct.
-        current_tw_items = {str(item["uuid"]): item for item in tw_side.get_all_items()}
+        with console.status(
+            "[bold]Loading Taskwarrior annotation snapshot...[/bold]",
+            spinner="dots",
+        ):
+            current_tw_items = {
+                str(item["uuid"]): item for item in tw_side.get_all_items()
+            }
         mapped_tasks = tuple(aggregator._B_to_A_map.items())
         repaired_annotations = 0
         reconciliation_progress = make_progress(console=console, unit="tasks")

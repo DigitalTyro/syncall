@@ -28,7 +28,7 @@ TASK_FIELDS = [
     "modified_at",
     "name",
 ]
-STORY_FIELDS = ["created_at", "gid", "resource_subtype", "text", "type"]
+STORY_FIELDS = ["created_at", "gid", "html_text", "resource_subtype", "text", "type"]
 
 
 class AsanaSide(SyncSide):
@@ -299,8 +299,7 @@ class AsanaSide(SyncSide):
         self._client.tasks.delete_task(item_id)
 
     def update_item(self, item_id: AsanaGID, **changes):
-        """Update only genuinely changed task fields and append missing comments."""
-        desired_comments = tuple(str(comment) for comment in changes.get("comments", ()))
+        """Update safe scalar task fields without rewriting existing Asana rich text."""
         raw_task = AsanaTask(**changes).to_raw_task()
 
         raw_task.pop("completed_at", None)
@@ -308,18 +307,16 @@ class AsanaSide(SyncSide):
         raw_task.pop("gid", None)
         raw_task.pop("modified_at", None)
 
+        # Existing Asana rich text is canonical. Taskwarrior only stores a readable,
+        # lossy projection of html_notes/comments, so writing that projection back would
+        # destroy images, mentions, links and formatting. Existing descriptions and comments
+        # are therefore intentionally one-way Asana -> Taskwarrior.
+        raw_task.pop("html_notes", None)
+
         remote_task = self.get_item(item_id)
         if remote_task is None:
             raise RuntimeError(f"Asana task {item_id} disappeared while updating it.")
         remote_raw = remote_task.to_raw_task()
-
-        desired_html_notes = raw_task.get("html_notes")
-        if desired_html_notes is not None and asana_html_to_markdown(
-            desired_html_notes,
-        ) == asana_html_to_markdown(remote_task.html_notes):
-            # Preserve Asana-only rich-text metadata (for example true mentions)
-            # when the Markdown representation was not actually edited.
-            raw_task.pop("html_notes", None)
 
         if remote_task.get("due_on", None) is None:
             raw_task.pop("due_on", None)
@@ -335,8 +332,6 @@ class AsanaSide(SyncSide):
         }
         if task_changes:
             self._client.tasks.update_task(item_id, task_changes)
-
-        self._add_missing_comments(item_id, desired_comments)
 
     def add_item(self, item: AsanaTask) -> AsanaTask:
         """Create a task without comments so identity can be checkpointed first."""

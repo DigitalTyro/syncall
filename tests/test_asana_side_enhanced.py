@@ -648,3 +648,30 @@ def test_non_object_comment_cache_is_rebuilt(tmp_path) -> None:
 
     assert tasks[0].comments == ()
     client.tasks.stories.assert_called_once()
+
+
+def test_update_item_does_not_put_when_task_fields_are_already_equal() -> None:
+    side, client = _side()
+    remote = AsanaTask.from_raw_task(_raw_task("1"))
+    side.get_item = MagicMock(return_value=remote)
+    client.tasks.stories.return_value = []
+
+    side.update_item("1", **dict(remote))
+
+    client.tasks.update_task.assert_not_called()
+
+
+def test_update_item_sends_only_genuinely_changed_fields() -> None:
+    side, client = _side()
+    remote = AsanaTask.from_raw_task(_raw_task("1"))
+    side.get_item = MagicMock(return_value=remote)
+    client.tasks.stories.return_value = []
+    changed = dict(remote)
+    changed["name"] = "[Client] Changed name"
+
+    side.update_item("1", **changed)
+
+    client.tasks.update_task.assert_called_once_with(
+        "1",
+        {"name": "[Client] Changed name"},
+    )

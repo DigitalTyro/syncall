@@ -65,7 +65,15 @@ def convert_tw_to_asana(tw_item: TwItem) -> AsanaTask:
 
     if tw_due is not None:
         as_due_at = tw_due if isinstance(tw_due, datetime.datetime) else parse_datetime(tw_due)
-        as_due_on = as_due_at.date()
+        if as_due_at.tzinfo is None:
+            as_due_on = as_due_at.date()
+        else:
+            # Taskwarrior serializes datetimes in UTC. Date-only Asana due dates are
+            # represented in Taskwarrior as local midnight, which may be the previous UTC
+            # calendar day (for example 00:00 BST == 23:00 UTC). Convert back to local time
+            # before extracting the calendar date so repeated syncs cannot ratchet due dates
+            # backwards by one day per run.
+            as_due_on = as_due_at.astimezone(dateutil.tz.tzlocal()).date()
 
     if isinstance(tw_modified, datetime.datetime):
         as_modified_at = tw_modified

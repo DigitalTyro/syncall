@@ -62,9 +62,7 @@ def resume_pending_asana_comments(
 ) -> int:
     """Resume interrupted TW→Asana comment creation from Taskwarrior-owned markers."""
     pending_items = [
-        item
-        for item in items
-        if item.get("asana_pending_comments") and item.get("asana_gid")
+        item for item in items if item.get("asana_pending_comments") and item.get("asana_gid")
     ]
     if not pending_items:
         return 0
@@ -382,9 +380,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
             "[bold]Loading Taskwarrior annotation snapshot...[/bold]",
             spinner="dots",
         ):
-            current_tw_items = {
-                str(item["uuid"]): item for item in tw_side.get_all_items()
-            }
+            current_tw_items = {str(item["uuid"]): item for item in tw_side.get_all_items()}
         mapped_tasks = tuple(aggregator._B_to_A_map.items())
         repaired_annotations = 0
         reconciliation_progress = make_progress(console=console, unit="tasks")

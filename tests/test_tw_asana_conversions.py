@@ -137,7 +137,6 @@ class TestTwAsanaConversions(GenericTestCase):
 
         assert round_trip["due_on"] == datetime.date(2026, 9, 21)
 
-
     def test_client_prefix_is_split_and_reconstructed(self):
         self.load_sample_items()
         asana_task = dict(self.asana_task)

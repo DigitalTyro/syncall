@@ -89,15 +89,14 @@ def test_apostrophes_remain_literal_in_generated_asana_html() -> None:
 
 def test_asana_image_projects_to_stable_asset_link() -> None:
     html = (
-        '<body>Before'
+        "<body>Before"
         '<img src="https://asanausercontent.com/signed" '
         'data-asana-gid="1218736823205951" alt="image.png" />'
-        'After</body>'
+        "After</body>"
     )
 
     markdown = asana_html_to_markdown(html)
 
     assert (
-        "[image.png](https://app.asana.com/app/asana/-/get_asset?"
-        "asset_id=1218736823205951)"
+        "[image.png](https://app.asana.com/app/asana/-/get_asset?asset_id=1218736823205951)"
     ) in markdown

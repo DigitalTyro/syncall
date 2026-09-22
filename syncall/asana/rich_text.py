@@ -34,8 +34,7 @@ def _inline_markdown_to_html(text: str) -> str:
     escaped = _CODE_RE.sub(stash_code, escaped)
     escaped = _LINK_RE.sub(
         lambda match: (
-            f'<a href="{match.group(2).replace(chr(34), "&quot;")}">'
-            f"{match.group(1)}</a>"
+            f'<a href="{match.group(2).replace(chr(34), "&quot;")}">{match.group(1)}</a>'
         ),
         escaped,
     )

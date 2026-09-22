@@ -325,9 +325,7 @@ class AsanaSide(SyncSide):
             raw_task.pop("due_on", None)
 
         task_changes = {
-            key: value
-            for key, value in raw_task.items()
-            if remote_raw.get(key) != value
+            key: value for key, value in raw_task.items() if remote_raw.get(key) != value
         }
         if task_changes:
             self._client.tasks.update_task(item_id, task_changes)

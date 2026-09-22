@@ -299,7 +299,7 @@ class AsanaSide(SyncSide):
         self._client.tasks.delete_task(item_id)
 
     def update_item(self, item_id: AsanaGID, **changes):
-        """Update an existing task and append any missing comments."""
+        """Update only genuinely changed task fields and append missing comments."""
         desired_comments = tuple(str(comment) for comment in changes.get("comments", ()))
         raw_task = AsanaTask(**changes).to_raw_task()
 
@@ -311,6 +311,7 @@ class AsanaSide(SyncSide):
         remote_task = self.get_item(item_id)
         if remote_task is None:
             raise RuntimeError(f"Asana task {item_id} disappeared while updating it.")
+        remote_raw = remote_task.to_raw_task()
 
         desired_html_notes = raw_task.get("html_notes")
         if desired_html_notes is not None and asana_html_to_markdown(
@@ -327,7 +328,14 @@ class AsanaSide(SyncSide):
         else:
             raw_task.pop("due_on", None)
 
-        self._client.tasks.update_task(item_id, raw_task)
+        task_changes = {
+            key: value
+            for key, value in raw_task.items()
+            if remote_raw.get(key) != value
+        }
+        if task_changes:
+            self._client.tasks.update_task(item_id, task_changes)
+
         self._add_missing_comments(item_id, desired_comments)
 
     def add_item(self, item: AsanaTask) -> AsanaTask:

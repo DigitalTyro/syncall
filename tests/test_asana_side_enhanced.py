@@ -77,7 +77,12 @@ def test_get_item_fetches_rich_notes_and_comment_stories() -> None:
     side, client = _side()
     client.tasks.find_by_id.return_value = _raw_task()
     client.tasks.stories.return_value = [
-        {"gid": "s1", "type": "comment", "text": "First comment"},
+        {
+            "gid": "s1",
+            "type": "comment",
+            "text": "First comment",
+            "html_text": "<body><strong>First</strong> comment</body>",
+        },
         {"gid": "s2", "resource_subtype": "comment_added", "text": "Second comment"},
         {"gid": "s3", "type": "system", "text": "changed the due date"},
     ]
@@ -87,9 +92,10 @@ def test_get_item_fetches_rich_notes_and_comment_stories() -> None:
     assert task is not None
     assert task.html_notes == "<body><strong>Short note</strong></body>"
     assert [str(comment) for comment in task.comments] == ["First comment", "Second comment"]
+    assert task.comments[0].html_text == "<body><strong>First</strong> comment</body>"
 
 
-def test_update_adds_only_missing_comments() -> None:
+def test_existing_task_comments_are_never_recreated_from_taskwarrior() -> None:
     side, client = _side()
     remote = _raw_task()
     client.tasks.find_by_id.return_value = remote
@@ -101,11 +107,10 @@ def test_update_adds_only_missing_comments() -> None:
     assert task is not None
 
     changes = dict(task)
-    changes["comments"] = ("Existing comment", "New comment")
+    changes["comments"] = ("Existing comment", "New local annotation")
     side.update_item("1", **changes)
 
-    client.tasks.update_task.assert_called_once()
-    client.tasks.add_comment.assert_called_once_with("1", text="New comment")
+    client.tasks.add_comment.assert_not_called()
 
 
 def test_comment_removal_is_not_destructive_on_asana() -> None:
@@ -125,12 +130,13 @@ def test_comment_removal_is_not_destructive_on_asana() -> None:
     client.tasks.add_comment.assert_not_called()
 
 
-def test_unchanged_markdown_preserves_asana_only_rich_metadata() -> None:
+def test_existing_asana_rich_notes_are_never_overwritten_from_taskwarrior() -> None:
     side, client = _side()
     remote = _raw_task()
     remote["html_notes"] = (
-        '<body><a href="https://app.asana.com/0/0/123" '
-        'data-asana-type="user" data-asana-gid="123">@Sam</a></body>'
+        '<body>Original <u><a href="https://example.com">link</a></u>'
+        '<img src="https://example.com/image.png" data-asana-gid="asset-1" '
+        'alt="image.png" /></body>'
     )
     client.tasks.find_by_id.return_value = remote
     client.tasks.stories.return_value = []
@@ -139,11 +145,14 @@ def test_unchanged_markdown_preserves_asana_only_rich_metadata() -> None:
     assert task is not None
 
     changes = dict(task)
-    changes["html_notes"] = '<body><a href="https://app.asana.com/0/0/123">@Sam</a></body>'
+    changes["html_notes"] = "<body>Completely different lossy local text</body>"
+    changes["name"] = "[Client] Changed name"
     side.update_item("1", **changes)
 
-    _, raw_update = client.tasks.update_task.call_args.args
-    assert "html_notes" not in raw_update
+    client.tasks.update_task.assert_called_once_with(
+        "1",
+        {"name": "[Client] Changed name"},
+    )
 
 
 def test_follower_discovery_pages_by_created_at() -> None:
@@ -181,7 +190,7 @@ def test_get_all_items_reuses_detailed_discovery_payloads(tmp_path) -> None:
     client.tasks.find_by_id.assert_not_called()
     client.tasks.stories.assert_called_once_with(
         "1",
-        fields=["created_at", "gid", "resource_subtype", "text", "type"],
+        fields=["created_at", "gid", "html_text", "resource_subtype", "text", "type"],
         page_size=100,
     )
 

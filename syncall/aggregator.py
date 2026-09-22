@@ -458,6 +458,20 @@ class Aggregator:
 
         return item_created_id
 
+    def _read_back_updated_item(
+        self,
+        side: SyncSide,
+        item_id: ID,
+        helper: SideHelper,
+    ) -> Item:
+        """Read back an updated item, failing if the target can no longer be retrieved."""
+        current_target = side.get_item(item_id, use_cached=False)
+        if current_target is None:
+            raise RuntimeError(
+                f"[{helper}] Updated item {item_id} could not be read back.",
+            )
+        return current_target
+
     def updater_to(self, item_id: ID, item: Item, helper: SideHelper):
         """Update an item using the given side helper."""
         side, _ = self._get_side_instances(helper)
@@ -469,11 +483,7 @@ class Aggregator:
 
         try:
             side.update_item(item_id, **item)
-            current_target = side.get_item(item_id, use_cached=False)
-            if current_target is None:
-                raise RuntimeError(
-                    f"[{helper}] Updated item {item_id} could not be read back.",
-                )
+            current_target = self._read_back_updated_item(side, item_id, helper)
             pickle_dump(current_target, serdes_dir / item_id)
             self._written_serdes.add((helper.name, item_id))
             self._advance_operation_progress()

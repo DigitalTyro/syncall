@@ -9,7 +9,6 @@ from bubop import logger
 from rich.console import Console
 
 from syncall.asana.asana_task import AsanaComment, AsanaTask
-from syncall.asana.rich_text import asana_html_to_markdown
 from syncall.progress import make_progress
 from syncall.sync_side import SyncSide
 from syncall.types import AsanaGID

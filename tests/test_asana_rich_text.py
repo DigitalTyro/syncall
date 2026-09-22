@@ -79,3 +79,25 @@ def test_special_characters_are_xml_safe() -> None:
     html = markdown_to_asana_html("A < B & C > D")
     assert html == "<body>A &lt; B &amp; C &gt; D</body>"
     assert asana_html_to_markdown(html) == "A < B & C > D"
+
+
+def test_apostrophes_remain_literal_in_generated_asana_html() -> None:
+    html = markdown_to_asana_html("I've checked Sean's notes.")
+
+    assert html == "<body>I've checked Sean's notes.</body>"
+
+
+def test_asana_image_projects_to_stable_asset_link() -> None:
+    html = (
+        '<body>Before'
+        '<img src="https://asanausercontent.com/signed" '
+        'data-asana-gid="1218736823205951" alt="image.png" />'
+        'After</body>'
+    )
+
+    markdown = asana_html_to_markdown(html)
+
+    assert (
+        "[image.png](https://app.asana.com/app/asana/-/get_asset?"
+        "asset_id=1218736823205951)"
+    ) in markdown

@@ -117,6 +117,27 @@ class TestTwAsanaConversions(GenericTestCase):
 
         assert asana_task["due_on"] == datetime.date(2026, 9, 21)
 
+    def test_asana_date_only_due_date_round_trips_through_taskwarrior_in_bst(self):
+        """Asana due_on must survive the full Asana -> TW -> Asana path in BST."""
+        self.load_sample_items()
+        asana_task = dict(self.asana_task)
+        asana_task["due_at"] = None
+        asana_task["due_on"] = datetime.date(2026, 9, 21)
+
+        london = dateutil.tz.gettz("Europe/London")
+        assert london is not None
+        with patch("syncall.tw_asana_utils.dateutil.tz.tzlocal", return_value=london):
+            tw_item = convert_asana_to_tw(asana_task)
+            assert tw_item is not None
+            tw_due = tw_item["due"]
+            assert tw_due is not None
+            # Simulate Taskwarrior's UTC serialization.
+            tw_item["due"] = tw_due.astimezone(datetime.UTC)
+            round_trip = convert_tw_to_asana(tw_item)
+
+        assert round_trip["due_on"] == datetime.date(2026, 9, 21)
+
+
     def test_client_prefix_is_split_and_reconstructed(self):
         self.load_sample_items()
         asana_task = dict(self.asana_task)

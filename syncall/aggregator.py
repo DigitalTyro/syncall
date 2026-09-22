@@ -469,7 +469,12 @@ class Aggregator:
 
         try:
             side.update_item(item_id, **item)
-            pickle_dump(item, serdes_dir / item_id)
+            current_target = side.get_item(item_id, use_cached=False)
+            if current_target is None:
+                raise RuntimeError(
+                    f"[{helper}] Updated item {item_id} could not be read back.",
+                )
+            pickle_dump(current_target, serdes_dir / item_id)
             self._written_serdes.add((helper.name, item_id))
             self._advance_operation_progress()
         except Exception:

@@ -22,7 +22,9 @@ _HR_RE = re.compile(r"^\s*(?:---+|\*\*\*+)\s*$")
 
 
 def _inline_markdown_to_html(text: str) -> str:
-    escaped = html.escape(text, quote=True)
+    # Text nodes do not need quotes escaped. Keeping apostrophes/quotes literal matches
+    # Asana's own html_notes output and avoids entity strings being re-escaped on write.
+    escaped = html.escape(text, quote=False)
     code_spans: list[str] = []
 
     def stash_code(match: re.Match[str]) -> str:
@@ -31,7 +33,10 @@ def _inline_markdown_to_html(text: str) -> str:
 
     escaped = _CODE_RE.sub(stash_code, escaped)
     escaped = _LINK_RE.sub(
-        lambda match: f'<a href="{match.group(2)}">{match.group(1)}</a>',
+        lambda match: (
+            f'<a href="{match.group(2).replace(chr(34), "&quot;")}">'
+            f"{match.group(1)}</a>"
+        ),
         escaped,
     )
     escaped = _BOLD_RE.sub(
@@ -268,11 +273,18 @@ class _AsanaHTMLToMarkdownParser(HTMLParser):
         self.parts.append("---\n")
 
     def _start_img(self, attrs: dict[str, str | None]) -> None:
-        fallback = attrs.get("alt") or attrs.get("src")
-        if not fallback:
+        alt = attrs.get("alt") or "Asana image"
+        asset_gid = attrs.get("data-asana-gid")
+        src = attrs.get("src")
+        target = (
+            f"https://app.asana.com/app/asana/-/get_asset?asset_id={asset_gid}"
+            if asset_gid
+            else src
+        )
+        if not target:
             return
         self._newline()
-        self.parts.append(fallback)
+        self.parts.append(f"[{alt}]({target})")
         self._newline()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:

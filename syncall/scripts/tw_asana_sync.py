@@ -57,20 +57,34 @@ def resume_pending_asana_comments(
     tw_side: TaskWarriorSide,
     asana_side: AsanaSide,
     items: list[dict],
+    *,
+    console: Console | None = None,
 ) -> int:
     """Resume interrupted TW→Asana comment creation from Taskwarrior-owned markers."""
-    resumed = 0
-    for item in items:
-        if not item.get("asana_pending_comments") or not item.get("asana_gid"):
-            continue
-        desired_asana = convert_tw_to_asana(item)
-        asana_side.ensure_comments(
-            str(item["asana_gid"]),
-            desired_asana.comments,
+    pending_items = [
+        item
+        for item in items
+        if item.get("asana_pending_comments") and item.get("asana_gid")
+    ]
+    if not pending_items:
+        return 0
+
+    progress = make_progress(console=console or Console(), unit="tasks")
+    with progress:
+        task_id = progress.add_task(
+            "Resuming interrupted comment sync",
+            total=len(pending_items),
         )
-        tw_side.clear_pending_asana_comments(str(item["uuid"]))
-        resumed += 1
-    return resumed
+        for item in pending_items:
+            desired_asana = convert_tw_to_asana(item)
+            asana_side.ensure_comments(
+                str(item["asana_gid"]),
+                desired_asana.comments,
+            )
+            tw_side.clear_pending_asana_comments(str(item["uuid"]))
+            progress.advance(task_id)
+
+    return len(pending_items)
 
 
 # CLI parsing ---------------------------------------------------------------------------------
@@ -284,7 +298,12 @@ def main(  # noqa: PLR0915, C901, PLR0912
             ("end", "entry", "modified", "urgency"),
         ),
     ) as aggregator:
-        existing_tw_items = tw_side.get_all_items()
+        console = Console()
+        with console.status("[bold]Loading Taskwarrior snapshot...[/bold]", spinner="dots"):
+            existing_tw_items = tw_side.get_all_items()
+        console.print(
+            f"[bold]Found {len(existing_tw_items):,} Taskwarrior tasks in sync scope[/bold]"
+        )
 
         # Resume any interrupted TW→Asana task creation before normal change detection.
         # The marker lives on the Taskwarrior task itself, so this does not depend on
@@ -293,6 +312,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
             tw_side,
             asana_side,
             existing_tw_items,
+            console=console,
         )
         if resumed_pending:
             logger.info(
@@ -316,9 +336,16 @@ def main(  # noqa: PLR0915, C901, PLR0912
 
         # Backfill all current mapped identities before doing any network writes. This makes
         # the mapping reconstructable even if syncall preference/cache files are later lost.
-        backfilled = tw_side.backfill_asana_gids(
-            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},
-        )
+        with console.status(
+            "[bold]Persisting Asana task identities in Taskwarrior...[/bold]",
+            spinner="dots",
+        ):
+            backfilled = tw_side.backfill_asana_gids(
+                {
+                    str(tw_id): str(asana_id)
+                    for tw_id, asana_id in aggregator._B_to_A_map.items()
+                },
+            )
         if backfilled:
             logger.info(f"Persisted Asana identity on {backfilled} Taskwarrior task(s).")
 
@@ -326,9 +353,16 @@ def main(  # noqa: PLR0915, C901, PLR0912
         aggregator.flush_correspondences()
 
         # Backfill any mappings created during this sync too.
-        post_sync_backfilled = tw_side.backfill_asana_gids(
-            {str(tw_id): str(asana_id) for tw_id, asana_id in aggregator._B_to_A_map.items()},
-        )
+        with console.status(
+            "[bold]Persisting newly created Asana task identities...[/bold]",
+            spinner="dots",
+        ):
+            post_sync_backfilled = tw_side.backfill_asana_gids(
+                {
+                    str(tw_id): str(asana_id)
+                    for tw_id, asana_id in aggregator._B_to_A_map.items()
+                },
+            )
         if post_sync_backfilled:
             logger.info(
                 f"Persisted Asana identity on {post_sync_backfilled} newly mapped "
@@ -341,7 +375,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
         current_tw_items = {str(item["uuid"]): item for item in tw_side.get_all_items()}
         mapped_tasks = tuple(aggregator._B_to_A_map.items())
         repaired_annotations = 0
-        reconciliation_progress = make_progress(console=Console(), unit="tasks")
+        reconciliation_progress = make_progress(console=console, unit="tasks")
         with reconciliation_progress:
             reconciliation_task = reconciliation_progress.add_task(
                 "Checking annotation history",

@@ -126,10 +126,25 @@ def main() -> int:
 
     prefix = Path(args.output_prefix)
     json_path = prefix.with_suffix(".json")
-    csv_path = prefix.with_suffix(".csv")
+    tasks_csv_path = prefix.with_name(f"{prefix.name}.tasks.csv")
+    stories_csv_path = prefix.with_name(f"{prefix.name}.stories.csv")
     json_path.write_text(
         json.dumps({"tasks": task_rows, "stories": story_rows}, indent=2, ensure_ascii=False),
     )
+
+    task_columns = [
+        "gid",
+        "name",
+        "modified_at",
+        "completed",
+        "completed_at",
+        "due_on",
+        "due_at",
+    ]
+    with tasks_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=task_columns)
+        writer.writeheader()
+        writer.writerows(task_rows)
 
     columns = [
         "task_gid",
@@ -151,7 +166,7 @@ def main() -> int:
         "old_approval_status",
         "new_approval_status",
     ]
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+    with stories_csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         for row in story_rows:
@@ -169,7 +184,8 @@ def main() -> int:
 
     print(f"Tasks modified in window: {len(task_rows)}")
     print(f"Stories/events in window: {len(story_rows)}")
-    print(f"Wrote: {csv_path}")
+    print(f"Wrote: {tasks_csv_path}")
+    print(f"Wrote: {stories_csv_path}")
     print(f"Wrote: {json_path}")
     return 0
 

@@ -443,3 +443,32 @@ def test_failed_update_checkpoints_actual_target_for_safe_retry(tmp_path) -> Non
     side.get_item.assert_called_once_with("a1", use_cached=False)
     assert aggregator._operation_failed is True
     assert ("Asana", "a1") in aggregator._written_serdes
+
+
+def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    helper.name = "Tw"
+    helper.summary_key = "description"
+    helper.other = MagicMock()
+    side = MagicMock()
+    actual = {"uuid": "tw-1", "description": "Stored form"}
+    side.get_item.return_value = actual
+
+    aggregator._get_side_instances = MagicMock(return_value=(side, MagicMock()))
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._summary_of = MagicMock(return_value="Task")
+    aggregator._operation_failed = False
+    aggregator._written_serdes = set()
+    aggregator._advance_operation_progress = MagicMock()
+
+    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
+        aggregator.updater_to(
+            "tw-1",
+            {"description": "Intended form"},
+            helper,
+        )
+
+    side.get_item.assert_called_once_with("tw-1", use_cached=False)
+    pickle_dump_mock.assert_called_once_with(actual, tmp_path / "tw-1")
+    assert ("Tw", "tw-1") in aggregator._written_serdes

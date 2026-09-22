@@ -1,3 +1,7 @@
+import datetime
+from unittest.mock import patch
+
+import dateutil.tz
 import yaml
 from syncall.tw_asana_utils import convert_asana_to_tw, convert_tw_to_asana
 
@@ -88,7 +92,30 @@ class TestTwAsanaConversions(GenericTestCase):
         assert "due_at" in asana_task
         assert asana_task["due_at"] == self.tw_item_w_due["due"]
         assert "due_on" in asana_task
-        assert asana_task["due_on"] == asana_task["due_at"].date()
+        expected_due_on = asana_task["due_at"]
+        if expected_due_on.tzinfo is not None:
+            expected_due_on = expected_due_on.astimezone(dateutil.tz.tzlocal())
+        assert asana_task["due_on"] == expected_due_on.date()
+
+    def test_date_only_asana_due_date_survives_taskwarrior_utc_round_trip(self):
+        """Local midnight in BST must not become the previous Asana calendar day."""
+        self.load_sample_items()
+        tw_item = dict(self.tw_item_w_due)
+        tw_item["due"] = datetime.datetime(
+            2026,
+            9,
+            20,
+            23,
+            0,
+            tzinfo=datetime.UTC,
+        )
+
+        london = dateutil.tz.gettz("Europe/London")
+        assert london is not None
+        with patch("syncall.tw_asana_utils.dateutil.tz.tzlocal", return_value=london):
+            asana_task = convert_tw_to_asana(tw_item)
+
+        assert asana_task["due_on"] == datetime.date(2026, 9, 21)
 
     def test_client_prefix_is_split_and_reconstructed(self):
         self.load_sample_items()

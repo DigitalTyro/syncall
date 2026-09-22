@@ -13,11 +13,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class AsanaComment:
-    """Represent an Asana comment story with stable identity and creation time."""
+    """Represent an Asana comment story while preserving its canonical rich text."""
 
     text: str
     gid: AsanaGID | None = None
     created_at: datetime.datetime | None = None
+    html_text: str | None = None
 
     def __str__(self) -> str:
         return self.text
@@ -35,6 +36,11 @@ class AsanaComment:
                 text=str(raw_comment.get("text") or raw_comment.get("description") or ""),
                 gid=raw_comment.get("gid"),
                 created_at=created_at,
+                html_text=(
+                    str(raw_comment["html_text"])
+                    if raw_comment.get("html_text") is not None
+                    else None
+                ),
             )
 
         return cls(text=str(raw_comment))
@@ -43,6 +49,7 @@ class AsanaComment:
         return {
             "gid": str(self.gid) if self.gid is not None else None,
             "text": self.text,
+            "html_text": self.html_text,
             "created_at": (
                 self.created_at.isoformat(timespec="milliseconds")
                 if self.created_at is not None

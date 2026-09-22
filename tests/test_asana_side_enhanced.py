@@ -269,7 +269,7 @@ def test_legacy_comment_cache_refreshes_nonempty_entries_once(tmp_path) -> None:
     assert tasks[0].comments[0].created_at is not None
     client.tasks.stories.assert_called_once()
     saved = cache_path.read_text()
-    assert '"version": 2' in saved
+    assert '"version": 3' in saved
     assert '"created_at": "2025-01-02T10:30:00.000+00:00"' in saved
 
 
@@ -293,7 +293,7 @@ def test_legacy_empty_comment_cache_upgrades_without_refetch(tmp_path) -> None:
 
     assert tasks[0].comments == ()
     client.tasks.stories.assert_not_called()
-    assert '"version": 2' in cache_path.read_text()
+    assert '"version": 3' in cache_path.read_text()
 
 
 def test_comment_metadata_does_not_create_false_sync_change() -> None:
@@ -323,7 +323,7 @@ def test_comment_metadata_does_not_create_false_sync_change() -> None:
 def test_structured_comment_cache_periodically_refreshes_edited_comments(tmp_path) -> None:
     cache_path = tmp_path / "comments.json"
     cache_path.write_text(
-        '{"1":{"version":2,"modified_at":"2026-09-20T12:30:00Z",'
+        '{"1":{"version":3,"modified_at":"2026-09-20T12:30:00Z",'
         '"checked_at":"2020-01-01T00:00:00+00:00","comments":['
         '{"gid":"story-1","text":"Old text","created_at":"2025-01-02T10:30:00+00:00"}]}}',
     )
@@ -481,7 +481,7 @@ def test_post_create_sync_adds_comments_after_task_identity_exists() -> None:
 def test_structured_comment_cache_without_checked_at_refreshes_once(tmp_path) -> None:
     cache_path = tmp_path / "comments.json"
     cache_path.write_text(
-        '{"1":{"version":2,"modified_at":"2026-09-20T12:30:00Z","comments":['
+        '{"1":{"version":3,"modified_at":"2026-09-20T12:30:00Z","comments":['
         '{"gid":"story-1","text":"Old text","created_at":"2025-01-02T10:30:00+00:00"}]}}',
     )
     client = MagicMock()
@@ -511,7 +511,7 @@ def test_structured_comment_cache_without_checked_at_refreshes_once(tmp_path) ->
 def test_changed_task_modified_at_invalidates_fresh_comment_cache(tmp_path) -> None:
     cache_path = tmp_path / "comments.json"
     cache_path.write_text(
-        '{"1":{"version":2,"modified_at":"2026-09-19T12:30:00Z",'
+        '{"1":{"version":3,"modified_at":"2026-09-19T12:30:00Z",'
         '"checked_at":"2026-09-21T12:00:00+00:00","comments":['
         '{"gid":"story-1","text":"Old text","created_at":"2025-01-02T10:30:00+00:00"}]}}',
     )
@@ -587,7 +587,7 @@ def test_comment_identity_collapses_whitespace_and_unicode_equivalents() -> None
 def test_deleted_comment_invalidates_cache_when_task_modified_at_changes(tmp_path) -> None:
     cache_path = tmp_path / "comments.json"
     cache_path.write_text(
-        '{"1":{"version":2,"modified_at":"2026-09-19T12:30:00Z",'
+        '{"1":{"version":3,"modified_at":"2026-09-19T12:30:00Z",'
         '"checked_at":"2026-09-21T12:00:00+00:00","comments":['
         '{"gid":"story-1","text":"Deleted comment","created_at":"2025-01-02T10:30:00+00:00"}]}}',
     )
@@ -611,7 +611,7 @@ def test_deleted_comment_invalidates_cache_when_task_modified_at_changes(tmp_pat
 def test_naive_checked_at_is_treated_as_stale(tmp_path) -> None:
     cache_path = tmp_path / "comments.json"
     cache_path.write_text(
-        '{"1":{"version":2,"modified_at":"2026-09-20T12:30:00Z",'
+        '{"1":{"version":3,"modified_at":"2026-09-20T12:30:00Z",'
         '"checked_at":"2026-09-21T12:00:00","comments":['
         '{"gid":"story-1","text":"Cached","created_at":"2025-01-02T10:30:00+00:00"}]}}',
     )

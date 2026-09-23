@@ -423,20 +423,6 @@ class TaskWarriorSide(SyncSide):
 
         return min(matches, key=distance)
 
-    @classmethod
-    def _find_annotation_by_digest(
-        cls,
-        annotations: Sequence[object],
-        used: set[int],
-        text_digest: str,
-    ) -> int | None:
-        for index, annotation in enumerate(annotations):
-            if index in used:
-                continue
-            if cls._annotation_text_digest(annotation) == text_digest:
-                return index
-        return None
-
     def reconcile_asana_comment_state(
         self,
         item_id: str,
@@ -474,20 +460,6 @@ class TaskWarriorSide(SyncSide):
             entry = binding["e"]
             text_digest = binding.get("h", "")
             annotation_index = self._find_annotation_by_entry(annotations, used_annotations, entry)
-
-            if annotation_index is None and remote is not None:
-                annotation_index = self._find_annotation_by_text(
-                    annotations,
-                    used_annotations,
-                    self._annotation_text_key(remote),
-                    target_entry=self._comment_created_at(remote),
-                )
-            elif annotation_index is None and text_digest:
-                annotation_index = self._find_annotation_by_digest(
-                    annotations,
-                    used_annotations,
-                    text_digest,
-                )
 
             if remote is None:
                 if annotation_index is not None:

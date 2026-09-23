@@ -502,3 +502,63 @@ def test_duplicate_text_prefers_remote_created_time_and_keeps_new_local_duplicat
     ]
 
     assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == ["Same text"]
+
+
+def test_reconcile_comment_state_imports_missing_remote_annotation_directly() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "annotations": [],
+    }
+    side, _, imported = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "New remote comment",
+            gid="story-new",
+            created_at=datetime.datetime(2026, 9, 23, 17, 0, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == []
+    assert imported[-1]["annotations"] == [
+        {
+            "entry": "20260923T170000Z",
+            "description": "New remote comment",
+        },
+    ]
+
+
+def test_bound_comment_does_not_capture_new_same_text_annotation() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "asana_comment_state": json.dumps(
+            {
+                "version": 1,
+                "bindings": {
+                    "story-1": {
+                        "e": "20240105T091500Z",
+                        "h": TaskWarriorSide._annotation_text_digest("Same text"),
+                    },
+                },
+            },
+        ),
+        "annotations": [
+            {
+                "entry": "20260923T170000Z",
+                "description": "Same text",
+            },
+        ],
+    }
+    side, _, _ = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "Same text",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == ["Same text"]

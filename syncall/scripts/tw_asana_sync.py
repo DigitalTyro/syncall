@@ -374,45 +374,6 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "Taskwarrior task(s).",
             )
 
-        # Annotation entry timestamps are not part of taskw-ng's normal annotate/update path.
-        # Reconcile them separately from cached Asana story metadata so interrupted migrations
-        # are safe to resume and future runs become cheap no-ops once dates are correct.
-        with console.status(
-            "[bold]Loading Taskwarrior annotation snapshot...[/bold]",
-            spinner="dots",
-        ):
-            current_tw_items = {str(item["uuid"]): item for item in tw_side.get_all_items()}
-        mapped_tasks = tuple(aggregator._B_to_A_map.items())
-        repaired_annotations = 0
-        reconciliation_progress = make_progress(console=console, unit="tasks")
-        with reconciliation_progress:
-            reconciliation_task = reconciliation_progress.add_task(
-                "Checking annotation history",
-                total=len(mapped_tasks),
-            )
-            for tw_id, asana_id in mapped_tasks:
-                asana_item = aggregator._items_A.get(str(asana_id))
-                if asana_item is not None:
-                    desired_tw_item = convert_asana_to_tw(asana_item)
-                    if desired_tw_item is not None:
-                        current_tw_item = current_tw_items.get(str(tw_id))
-                        current_annotations = (
-                            current_tw_item.get("annotations", ())
-                            if current_tw_item is not None
-                            else None
-                        )
-                        repaired_annotations += tw_side.reconcile_annotation_timestamps(
-                            str(tw_id),
-                            desired_tw_item.get("annotations", ()),
-                            current_annotations=current_annotations,
-                        )
-                reconciliation_progress.advance(reconciliation_task)
-
-        if repaired_annotations:
-            logger.info(
-                f"Repaired {repaired_annotations} historical Taskwarrior annotation "
-                "timestamp(s) from Asana.",
-            )
 
     sync_lock.close()
     return 0

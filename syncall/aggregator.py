@@ -137,6 +137,12 @@ class Aggregator:
         self._operation_failed = False
         self._written_serdes: set[tuple[str, ID]] = set()
         self.cleaned_up = False
+        self._asana_comment_baseline_key = "append_only_asana_comments_version"
+        self._asana_comment_baseline_version = (
+            int(self.prefs_manager[self._asana_comment_baseline_key])
+            if self._asana_comment_baseline_key in self.prefs_manager
+            else 0
+        )
 
     def __enter__(self) -> Self:
         """Enter context manager."""
@@ -264,6 +270,7 @@ class Aggregator:
 
         total_operations = self._count_sync_operations(changes_A, changes_B)
         if total_operations == 0:
+            self._enable_append_only_asana_comments_after_baseline()
             console.print("[bold green]Already in sync[/bold green]")
             return
 
@@ -300,6 +307,15 @@ class Aggregator:
 
         self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
         self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
+        self._enable_append_only_asana_comments_after_baseline()
+
+    def _enable_append_only_asana_comments_after_baseline(self) -> None:
+        """Enable outbound comments only after one successful post-upgrade sync baseline."""
+        if self._asana_comment_baseline_version >= 1:
+            return
+        self.prefs_manager[self._asana_comment_baseline_key] = 1
+        self.flush_correspondences()
+        self._asana_comment_baseline_version = 1
 
     def start(self) -> None:
         """Initialize the aggregator."""
@@ -483,7 +499,11 @@ class Aggregator:
 
         try:
             outbound_comments: list[str] = []
-            if helper is self._helper_A and helper.other is self._helper_B:
+            if (
+                self._asana_comment_baseline_version >= 1
+                and helper is self._helper_A
+                and helper.other is self._helper_B
+            ):
                 source_item_id = self._B_to_A_map.inverse.get(item_id)
                 if source_item_id is not None:
                     previous_source_path = other_serdes_dir / source_item_id

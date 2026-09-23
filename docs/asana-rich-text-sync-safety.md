@@ -86,8 +86,9 @@ The final document may look superficially similar while silently losing metadata
 As of the append-only comment implementation:
 
 - the first successful sync after upgrade establishes a baseline and publishes no historical TW annotations
-- subsequent TW annotations are identified by their Taskwarrior annotation creation timestamp relative to the last successful TW snapshot
-- annotation text is not part of identity, so editing an existing annotation while retaining its timestamp does not create a new Asana comment
+- subsequent TW annotations are matched first by their Taskwarrior annotation creation timestamp relative to the last successful TW snapshot
+- unmatched annotations are conservatively matched by normalised text as a fallback, because imported Asana annotation timestamps may be repaired after the main sync
+- editing an existing annotation while retaining its timestamp does not create a new Asana comment
 - annotations without a stable creation timestamp fail closed and are not published
 - outbound comments are collected independently of generic whole-task conflict resolution
 - immediately before any write, live Asana comments are re-read and normalised to prevent duplicates

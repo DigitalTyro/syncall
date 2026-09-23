@@ -312,7 +312,10 @@ class TaskWarriorSide(SyncSide):
         except (TypeError, ValueError):
             logger.warning("Ignoring malformed Taskwarrior Asana comment sync state.")
             return {}
-        if not isinstance(parsed, dict) or parsed.get("version") != ASANA_COMMENT_STATE_VERSION:
+        if (
+            not isinstance(parsed, dict)
+            or parsed.get("version") != ASANA_COMMENT_STATE_VERSION
+        ):
             return {}
         bindings = parsed.get("bindings")
         if not isinstance(bindings, dict):

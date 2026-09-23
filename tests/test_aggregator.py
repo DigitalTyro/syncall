@@ -483,8 +483,6 @@ def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
     assert ("Tw", "tw-1") in aggregator._written_serdes
 
 
-
-
 def test_sync_comment_histories_backfills_missed_local_comment() -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()

@@ -317,7 +317,6 @@ def test_clear_pending_asana_comments_removes_recovery_marker() -> None:
     assert side._reload_items is True
 
 
-
 def test_reconcile_comment_state_rebuilds_from_remote_gid_and_timestamp() -> None:
     raw_task = {
         "uuid": "tw-1",

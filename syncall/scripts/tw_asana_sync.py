@@ -289,11 +289,12 @@ def main(  # noqa: PLR0915, C901, PLR0912
         config_fname=combination_name,
         ignore_keys=(
             (
+                "comments",
                 "completed_at",
                 "created_at",
                 "modified_at",
             ),
-            ("end", "entry", "modified", "urgency"),
+            ("annotations", "end", "entry", "modified", "urgency"),
         ),
     ) as aggregator:
         console = Console()

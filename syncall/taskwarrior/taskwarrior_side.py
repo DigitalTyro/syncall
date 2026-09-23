@@ -767,6 +767,8 @@ class TaskWarriorSide(SyncSide):
 
     def update_item(self, item_id: str, **changes):
         changes.pop("id", False)
+        # Existing-task comments are reconciled independently from whole-task scalar sync.
+        changes.pop("annotations", None)
         t = self._tw.get_task(uuid=UUID(item_id))[-1]
 
         unwanted_keys = ["imask", "recur", "rtype", "parent", "urgency"]

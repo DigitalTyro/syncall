@@ -83,19 +83,26 @@ The final document may look superficially similar while silently losing metadata
 
 ## Current append-only outbound comment behaviour
 
-As of the append-only comment implementation:
+Outbound comments are designed to be self-healing and independent of syncall's disposable caches.
 
-- the first successful sync after upgrade establishes a baseline and publishes no historical TW annotations
-- subsequent TW annotations are matched first by their Taskwarrior annotation creation timestamp relative to the last successful TW snapshot
-- unmatched annotations are conservatively matched by normalised text as a fallback, because imported Asana annotation timestamps may be repaired after the main sync
-- editing an existing annotation while retaining its timestamp does not create a new Asana comment
-- annotations without a stable creation timestamp fail closed and are not published
-- outbound comments are collected independently of generic whole-task conflict resolution
-- immediately before any write, live Asana comments are re-read and normalised to prevent duplicates
-- successful writes are read back and the actual Asana state is checkpointed
-- retries remain safe because a comment already present remotely is not added again
+For every mapped task during a normal sync:
 
-The two duplicate comments seen during the September 2026 incident should not be treated as proof of one exact cause: the corrected audit did not show corresponding `comment_added` stories in that window. The old pathway nevertheless lacked reliable "new local annotation" identity and operated on the whole desired annotation set. The current design removes that ambiguity rather than relying on an unproven post-mortem.
+- syncall fetches the **live Asana comment history** before normal change detection
+- those live comments replace any cached Asana comment snapshot, so a new Asana comment can itself trigger Asana → Taskwarrior synchronisation
+- Taskwarrior stores a compact versioned `asana_comment_state` UDA on the task
+- that ledger maps stable Asana comment GIDs to the corresponding Taskwarrior annotation identity (creation timestamp plus a compact text digest)
+- if the ledger is missing, malformed or incomplete, syncall automatically rebuilds as much of it as possible from live Asana GIDs, `created_at` values and normalized comment text
+- annotations that can be matched to existing Asana comments are treated as already synchronized
+- an unmatched Taskwarrior annotation with a stable creation timestamp is treated as a missing outbound comment and is appended to Asana
+- after appending, syncall fetches live Asana history again and immediately rebuilds the ledger using the real newly-created Asana GID
+- existing Asana comments remain immutable from Taskwarrior; editing/deleting a TW copy never edits/deletes the Asana comment
+- deleted Asana comment identities are retained as tombstones in the ledger so a lingering local copy cannot later be resurrected as a new comment
+- live Asana duplicate checks still run immediately before every write
+- identical-text comments are paired one-to-one, preferring the annotation timestamp closest to the Asana comment's creation time
+
+This means the comment system does **not** rely on a one-time global baseline or the last serdes snapshot. A missed local annotation can be discovered and backfilled on a later ordinary sync even when no other field changed. Deleting syncall's local serdes/comment cache/preferences does not erase comment identity because task identity and comment identity are persisted in Taskwarrior and are cross-checked against live Asana state.
+
+The remaining irreducible ambiguity is if **all durable identity is deliberately stripped from Taskwarrior as well** (for example the task is exported/imported without its `asana_gid` and `asana_comment_state`) *and* historical comments have been edited into indistinguishable forms. In normal syncall operation, cache loss alone does not create that condition.
 
 ## Desired future behaviour
 
@@ -243,11 +250,9 @@ For existing tasks:
 - editing/deleting an Asana comment may be reflected back into Taskwarrior using its stable source identity
 - only a genuinely new local annotation should be eligible to create a new Asana comment
 
-### Initial comment migration/baseline
+### Comment state migration and recovery
 
-The append-only implementation uses a versioned one-time upgrade baseline. The first successful sync after the feature is installed does not publish historical Taskwarrior annotations. It then records the feature baseline, so only annotations created after that successful baseline are eligible for outbound publication.
-
-For a newly created Taskwarrior → Asana task, the existing post-create pathway remains a separate, valid case.
+There is no separate migration command and no global one-time baseline. Each normal sync reconciles the per-task durable ledger against live Asana history. Tasks without a ledger are automatically bootstrapped; incomplete ledgers are automatically repaired; unmatched local annotations are automatically backfilled. For a newly created Taskwarrior → Asana task, the existing post-create pathway remains a separate, valid case.
 
 ### Duplicate prevention
 

@@ -372,6 +372,10 @@ class Aggregator:
 
     def _enable_append_only_asana_comments_after_baseline(self) -> None:
         """Enable outbound comments only after one successful post-upgrade sync baseline."""
+        if not callable(getattr(self._side_A, "ensure_comments", None)) or not callable(
+            getattr(self._side_B, "new_annotations_since", None),
+        ):
+            return
         if self._asana_comment_baseline_version >= 1:
             return
         self.prefs_manager[self._asana_comment_baseline_key] = 1

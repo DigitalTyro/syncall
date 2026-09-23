@@ -311,57 +311,77 @@ class Aggregator:
         self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
         self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
 
-    def _sync_comment_histories(self) -> None:
-        """Converge mapped Asana/TW comment history before generic task synchronization."""
+    def _comment_sync_functions(self):
+        """Return optional comment-sync capabilities, or None for unrelated sync sides."""
         get_comments_live = getattr(self._side_A, "get_comments_live", None)
         ensure_comments = getattr(self._side_A, "ensure_comments", None)
         reconcile = getattr(self._side_B, "reconcile_asana_comment_state", None)
-        if (
-            not callable(get_comments_live)
-            or not callable(ensure_comments)
-            or not callable(reconcile)
-        ):
+        if not all(callable(fn) for fn in (get_comments_live, ensure_comments, reconcile)):
+            return None
+        return get_comments_live, ensure_comments, reconcile
+
+    def _store_live_comments(self, asana_id: str, asana_item: Item, live_comments) -> None:
+        """Keep the current Asana snapshot aligned with freshly fetched comment history."""
+        self._live_asana_comments[asana_id] = live_comments
+        if hasattr(asana_item, "comments"):
+            asana_item.comments = tuple(live_comments)
+        elif isinstance(asana_item, dict):
+            asana_item["comments"] = tuple(live_comments)
+
+    def _sync_one_comment_history(
+        self,
+        tw_id: str,
+        asana_id: str,
+        *,
+        get_comments_live,
+        ensure_comments,
+        reconcile,
+    ) -> None:
+        """Converge one mapped task's comment history."""
+        asana_item = self._items_A.get(asana_id)
+        current_tw = self._items_B.get(tw_id)
+        if asana_item is None or current_tw is None:
             return
 
+        live_comments = get_comments_live(asana_id)
+        self._store_live_comments(asana_id, asana_item, live_comments)
+
+        outbound = reconcile(tw_id, current_tw, live_comments)
+        if not outbound:
+            return
+
+        ensure_comments(asana_id, outbound)
+        live_comments = get_comments_live(asana_id)
+        self._store_live_comments(asana_id, asana_item, live_comments)
+
+        refreshed_tw = self._side_B.get_item(tw_id, use_cached=False)
+        if refreshed_tw is None:
+            raise RuntimeError(
+                f"Taskwarrior task {tw_id} disappeared while checkpointing comments.",
+            )
+        remaining = reconcile(tw_id, refreshed_tw, live_comments)
+        if remaining:
+            raise RuntimeError(
+                f"Taskwarrior task {tw_id} still has unsynchronized comments after "
+                "Asana append/read-back; refusing to continue.",
+            )
+
+    def _sync_comment_histories(self) -> None:
+        """Converge mapped Asana/TW comment history before generic task synchronization."""
+        functions = self._comment_sync_functions()
+        if functions is None:
+            return
+
+        get_comments_live, ensure_comments, reconcile = functions
         self._live_asana_comments = {}
-        for tw_id, asana_id in self._B_to_A_map.items():
-            tw_id = str(tw_id)
-            asana_id = str(asana_id)
-            asana_item = self._items_A.get(asana_id)
-            current_tw = self._items_B.get(tw_id)
-            if asana_item is None or current_tw is None:
-                continue
-
-            live_comments = get_comments_live(asana_id)
-            self._live_asana_comments[asana_id] = live_comments
-            if hasattr(asana_item, "comments"):
-                asana_item.comments = tuple(live_comments)
-            elif isinstance(asana_item, dict):
-                asana_item["comments"] = tuple(live_comments)
-
-            outbound = reconcile(tw_id, current_tw, live_comments)
-            if not outbound:
-                continue
-
-            ensure_comments(asana_id, outbound)
-            live_comments = get_comments_live(asana_id)
-            self._live_asana_comments[asana_id] = live_comments
-            if hasattr(asana_item, "comments"):
-                asana_item.comments = tuple(live_comments)
-            elif isinstance(asana_item, dict):
-                asana_item["comments"] = tuple(live_comments)
-
-            refreshed_tw = self._side_B.get_item(tw_id, use_cached=False)
-            if refreshed_tw is None:
-                raise RuntimeError(
-                    f"Taskwarrior task {tw_id} disappeared while checkpointing comments.",
-                )
-            remaining = reconcile(tw_id, refreshed_tw, live_comments)
-            if remaining:
-                raise RuntimeError(
-                    f"Taskwarrior task {tw_id} still has unsynchronized comments after "
-                    "Asana append/read-back; refusing to continue.",
-                )
+        for tw_ref, asana_ref in self._B_to_A_map.items():
+            self._sync_one_comment_history(
+                str(tw_ref),
+                str(asana_ref),
+                get_comments_live=get_comments_live,
+                ensure_comments=ensure_comments,
+                reconcile=reconcile,
+            )
 
     def start(self) -> None:
         """Initialize the aggregator."""

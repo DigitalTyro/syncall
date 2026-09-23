@@ -136,6 +136,7 @@ class Aggregator:
         self._operation_progress_task = None
         self._operation_failed = False
         self._written_serdes: set[tuple[str, ID]] = set()
+        self._live_asana_comments: dict[ID, Sequence[object]] = {}
         self.cleaned_up = False
 
     def __enter__(self) -> Self:
@@ -247,6 +248,8 @@ class Aggregator:
             f"[bold]Found {len(self._items_B):,} Taskwarrior tasks in sync scope[/bold]"
         )
 
+        self._refresh_live_comment_snapshots()
+
         changes_A = self.detect_changes(self._helper_A, self._items_A)
         changes_B = self.detect_changes(self._helper_B, self._items_B)
 
@@ -309,6 +312,25 @@ class Aggregator:
         self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
         self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
 
+    def _refresh_live_comment_snapshots(self) -> None:
+        """Replace mapped Asana comment snapshots with live history before change detection."""
+        get_comments_live = getattr(self._side_A, "get_comments_live", None)
+        if not callable(get_comments_live):
+            return
+
+        self._live_asana_comments = {}
+        for _, asana_id in self._B_to_A_map.items():
+            asana_id = str(asana_id)
+            asana_item = self._items_A.get(asana_id)
+            if asana_item is None:
+                continue
+            comments = get_comments_live(asana_id)
+            self._live_asana_comments[asana_id] = comments
+            if hasattr(asana_item, "comments"):
+                asana_item.comments = tuple(comments)
+            elif isinstance(asana_item, dict):
+                asana_item["comments"] = tuple(comments)
+
     def _collect_new_asana_comments(self) -> dict[ID, list[str]]:
         """Reconcile durable comment identity and find any local annotations missing in Asana."""
         reconcile = getattr(self._side_B, "reconcile_asana_comment_state", None)
@@ -327,7 +349,10 @@ class Aggregator:
             if current_source is None or str(asana_id) not in self._items_A:
                 continue
 
-            remote_comments = get_comments_live(str(asana_id))
+            remote_comments = self._live_asana_comments.get(str(asana_id))
+            if remote_comments is None:
+                remote_comments = get_comments_live(str(asana_id))
+                self._live_asana_comments[str(asana_id)] = remote_comments
             new_comments = reconcile(str(tw_id), current_source, remote_comments)
             if new_comments:
                 pending[str(asana_id)] = new_comments
@@ -357,6 +382,7 @@ class Aggregator:
 
             ensure_comments(asana_id, comments)
             live_comments = get_comments_live(asana_id)
+            self._live_asana_comments[asana_id] = live_comments
             current_source = self._side_B.get_item(str(tw_id), use_cached=False)
             if current_source is None:
                 raise RuntimeError(

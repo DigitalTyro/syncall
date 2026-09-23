@@ -313,3 +313,116 @@ def test_clear_pending_asana_comments_removes_recovery_marker() -> None:
     )
     assert "asana_pending_comments" not in side._items_cache["tw-1"]
     assert side._reload_items is True
+
+
+def test_new_annotations_since_uses_entry_identity_not_text() -> None:
+    previous = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Original text",
+            },
+        ],
+    }
+    current = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Edited locally",
+            },
+            {
+                "entry": "20260923T170000Z",
+                "description": "Brand new comment",
+            },
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == [
+        "Brand new comment",
+    ]
+
+
+def test_new_annotations_since_does_not_publish_preexisting_duplicates() -> None:
+    previous = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Same text",
+            },
+            {
+                "entry": "20260921T120200Z",
+                "description": "Same text",
+            },
+        ],
+    }
+    current = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Same text",
+            },
+            {
+                "entry": "20260921T120200Z",
+                "description": "Same text",
+            },
+            {
+                "entry": "20260923T170000Z",
+                "description": "Same text",
+            },
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == ["Same text"]
+
+
+def test_new_annotations_since_fails_closed_without_entry_timestamp() -> None:
+    previous = {"annotations": []}
+    current = {
+        "annotations": [
+            {"description": "No stable timestamp"},
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == []
+
+
+def test_timestamp_repair_does_not_turn_imported_comment_into_new_outbound_comment() -> None:
+    previous = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Imported Asana comment",
+            },
+        ],
+    }
+    current = {
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Imported Asana comment",
+            },
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == []
+
+
+def test_timestamp_repair_fallback_normalizes_whitespace_and_unicode() -> None:
+    previous = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Café   first\tline\nsecond line",
+            },
+        ],
+    }
+    current = {
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Cafe\u0301 first line second line",
+            },
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == []

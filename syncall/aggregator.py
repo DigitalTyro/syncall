@@ -137,6 +137,12 @@ class Aggregator:
         self._operation_failed = False
         self._written_serdes: set[tuple[str, ID]] = set()
         self.cleaned_up = False
+        self._asana_comment_baseline_key = "append_only_asana_comments_version"
+        self._asana_comment_baseline_version = (
+            int(self.prefs_manager[self._asana_comment_baseline_key])
+            if self._asana_comment_baseline_key in self.prefs_manager
+            else 0
+        )
 
     def __enter__(self) -> Self:
         """Enter context manager."""
@@ -262,8 +268,10 @@ class Aggregator:
             ),
         ]
 
+        pending_asana_comments = self._collect_new_asana_comments(changes_A, changes_B)
         total_operations = self._count_sync_operations(changes_A, changes_B)
         if total_operations == 0:
+            self._enable_append_only_asana_comments_after_baseline()
             console.print("[bold green]Already in sync[/bold green]")
             return
 
@@ -283,6 +291,13 @@ class Aggregator:
                 self._operation_progress_task = None
                 self.flush_correspondences()
 
+        if not self._operation_failed and pending_asana_comments:
+            try:
+                self._append_new_asana_comments(pending_asana_comments)
+            except Exception:
+                self._operation_failed = True
+                raise
+
         if self._operation_failed:
             raise RuntimeError(
                 "One or more sync writes failed; sync state was not committed so the "
@@ -300,6 +315,72 @@ class Aggregator:
 
         self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
         self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
+        self._enable_append_only_asana_comments_after_baseline()
+
+    def _collect_new_asana_comments(
+        self,
+        changes_A: SideChanges,
+        changes_B: SideChanges,
+    ) -> dict[ID, list[str]]:
+        """Capture new TW annotations independently of whole-task conflict resolution."""
+        if getattr(self, "_asana_comment_baseline_version", 0) < 1:
+            return {}
+
+        detect_new = getattr(self._side_B, "new_annotations_since", None)
+        ensure_comments = getattr(self._side_A, "ensure_comments", None)
+        if not callable(detect_new) or not callable(ensure_comments):
+            return {}
+
+        _, tw_serdes_dir = self._get_serdes_dirs(self._helper_A)
+        pending: dict[ID, list[str]] = {}
+        for tw_id in changes_B.modified:
+            asana_id = self._B_to_A_map.get(tw_id)
+            if asana_id is None or asana_id in changes_A.deleted:
+                continue
+
+            previous_path = tw_serdes_dir / tw_id
+            current_source = self._items_B.get(tw_id)
+            if current_source is None or not previous_path.is_file():
+                continue
+
+            previous_source = pickle_load(previous_path)
+            new_comments = detect_new(previous_source, current_source)
+            if new_comments:
+                pending[asana_id] = new_comments
+
+        return pending
+
+    def _append_new_asana_comments(
+        self,
+        pending: dict[ID, list[str]],
+    ) -> None:
+        """Append new TW comments and checkpoint the actual Asana state after each write."""
+        ensure_comments = getattr(self._side_A, "ensure_comments", None)
+        if not callable(ensure_comments):
+            return
+
+        asana_serdes_dir, _ = self._get_serdes_dirs(self._helper_A)
+        for asana_id, comments in pending.items():
+            ensure_comments(asana_id, comments)
+            current_target = self._read_back_updated_item(
+                self._side_A,
+                asana_id,
+                self._helper_A,
+            )
+            pickle_dump(current_target, asana_serdes_dir / asana_id)
+            self._written_serdes.add((self._helper_A.name, asana_id))
+
+    def _enable_append_only_asana_comments_after_baseline(self) -> None:
+        """Enable outbound comments only after one successful post-upgrade sync baseline."""
+        if not callable(getattr(self._side_A, "ensure_comments", None)) or not callable(
+            getattr(self._side_B, "new_annotations_since", None),
+        ):
+            return
+        if self._asana_comment_baseline_version >= 1:
+            return
+        self.prefs_manager[self._asana_comment_baseline_key] = 1
+        self.flush_correspondences()
+        self._asana_comment_baseline_version = 1
 
     def start(self) -> None:
         """Initialize the aggregator."""

@@ -4,6 +4,7 @@ import copy
 import datetime
 import json
 import tempfile
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -247,6 +248,93 @@ class TaskWarriorSide(SyncSide):
             sorted(current_by_text.get(text, ())) == sorted(desired_entries)
             for text, desired_entries in desired_by_text.items()
         )
+
+    @staticmethod
+    def _annotation_entry(annotation: object) -> datetime.datetime | None:
+        """Return the Taskwarrior annotation creation time when one is available."""
+        if isinstance(annotation, dict):
+            entry = annotation.get("entry")
+        else:
+            entry = getattr(annotation, "entry", None)
+            if entry is None:
+                entry = getattr(annotation, "source_entry", None)
+
+        if entry is None:
+            return None
+        return parse_datetime_(entry)
+
+    @staticmethod
+    def _annotation_text(annotation: object) -> str:
+        if isinstance(annotation, dict):
+            return str(annotation.get("description") or "").strip()
+        return str(annotation).strip()
+
+    @classmethod
+    def _annotation_text_key(cls, annotation: object) -> str:
+        text = unicodedata.normalize("NFC", cls._annotation_text(annotation))
+        return " ".join(text.split())
+
+    @classmethod
+    def new_annotations_since(
+        cls,
+        previous_item: Mapping[str, Any],
+        current_item: Mapping[str, Any],
+    ) -> list[str]:
+        """Return only annotations not represented by the previous successful snapshot.
+
+        Match by Taskwarrior creation timestamp first, so editing an existing annotation's text
+        does not publish a new Asana comment. Then match still-unpaired annotations by normalized
+        text. That conservative fallback is required because syncall may repair an imported
+        Asana annotation's Taskwarrior timestamp after the main sync; the timestamp can therefore
+        legitimately differ from the prior snapshot even though the annotation is not new.
+        """
+        previous = list(previous_item.get("annotations", ()))
+        matched_previous = [False] * len(previous)
+        new_annotations: list[str] = []
+
+        for annotation in current_item.get("annotations", ()):
+            entry = cls._annotation_entry(annotation)
+            if entry is None:
+                logger.warning(
+                    "Skipping outbound Asana comment for Taskwarrior annotation without "
+                    "a stable creation timestamp.",
+                )
+                continue
+
+            entry_key = cls._format_tw_datetime(entry)
+            entry_match = next(
+                (
+                    index
+                    for index, previous_annotation in enumerate(previous)
+                    if not matched_previous[index]
+                    and (previous_entry := cls._annotation_entry(previous_annotation)) is not None
+                    and cls._format_tw_datetime(previous_entry) == entry_key
+                ),
+                None,
+            )
+            if entry_match is not None:
+                matched_previous[entry_match] = True
+                continue
+
+            text_key = cls._annotation_text_key(annotation)
+            text_match = next(
+                (
+                    index
+                    for index, previous_annotation in enumerate(previous)
+                    if not matched_previous[index]
+                    and cls._annotation_text_key(previous_annotation) == text_key
+                ),
+                None,
+            )
+            if text_match is not None:
+                matched_previous[text_match] = True
+                continue
+
+            text = cls._annotation_text(annotation)
+            if text:
+                new_annotations.append(text)
+
+        return new_annotations
 
     def reconcile_annotation_timestamps(
         self,

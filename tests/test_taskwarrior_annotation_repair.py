@@ -384,3 +384,45 @@ def test_new_annotations_since_fails_closed_without_entry_timestamp() -> None:
     }
 
     assert TaskWarriorSide.new_annotations_since(previous, current) == []
+
+
+def test_timestamp_repair_does_not_turn_imported_comment_into_new_outbound_comment() -> None:
+    previous = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Imported Asana comment",
+            },
+        ],
+    }
+    current = {
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Imported Asana comment",
+            },
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == []
+
+
+def test_timestamp_repair_fallback_normalizes_whitespace_and_unicode() -> None:
+    previous = {
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Café   first\tline\nsecond line",
+            },
+        ],
+    }
+    current = {
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Cafe\u0301 first line second line",
+            },
+        ],
+    }
+
+    assert TaskWarriorSide.new_annotations_since(previous, current) == []

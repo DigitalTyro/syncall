@@ -474,15 +474,34 @@ class Aggregator:
 
     def updater_to(self, item_id: ID, item: Item, helper: SideHelper):
         """Update an item using the given side helper."""
-        side, _ = self._get_side_instances(helper)
-        serdes_dir, _ = self._get_serdes_dirs(helper)
+        side, other_side = self._get_side_instances(helper)
+        serdes_dir, other_serdes_dir = self._get_serdes_dirs(helper)
         logger.debug(
             f"[{helper.other}] Updating item [{self._summary_of(item, helper):10}] at"
             f" {helper}...",
         )
 
         try:
+            outbound_comments: list[str] = []
+            if helper is self._helper_A and helper.other is self._helper_B:
+                source_item_id = self._B_to_A_map.inverse.get(item_id)
+                if source_item_id is not None:
+                    previous_source_path = other_serdes_dir / source_item_id
+                    current_source = self._items_B.get(source_item_id)
+                    detect_new = getattr(other_side, "new_annotations_since", None)
+                    if (
+                        callable(detect_new)
+                        and current_source is not None
+                        and previous_source_path.is_file()
+                    ):
+                        previous_source = pickle_load(previous_source_path)
+                        outbound_comments = detect_new(previous_source, current_source)
+
             side.update_item(item_id, **item)
+            if outbound_comments:
+                ensure_comments = getattr(side, "ensure_comments", None)
+                if callable(ensure_comments):
+                    ensure_comments(item_id, outbound_comments)
             current_target = self._read_back_updated_item(side, item_id, helper)
             pickle_dump(current_target, serdes_dir / item_id)
             self._written_serdes.add((helper.name, item_id))

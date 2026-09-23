@@ -476,12 +476,11 @@ class TaskWarriorSide(SyncSide):
                 if isinstance(existing, Mapping):
                     updated = dict(existing)
                     updated["description"] = remote_text
-                    if remote_entry is not None:
-                        updated["entry"] = self._format_tw_datetime(remote_entry)
                     annotations[annotation_index] = updated
+                annotation_entry = self._annotation_entry(annotations[annotation_index])
                 entry_value = (
-                    self._format_tw_datetime(remote_entry)
-                    if remote_entry is not None
+                    self._format_tw_datetime(annotation_entry)
+                    if annotation_entry is not None
                     else entry
                 )
             else:
@@ -549,8 +548,6 @@ class TaskWarriorSide(SyncSide):
                 if isinstance(existing, Mapping):
                     updated = dict(existing)
                     updated["description"] = self._annotation_text(remote)
-                    if remote_entry is not None:
-                        updated["entry"] = self._format_tw_datetime(remote_entry)
                     annotations[annotation_index] = updated
 
             used_annotations.add(annotation_index)

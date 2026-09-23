@@ -500,7 +500,7 @@ class Aggregator:
         try:
             outbound_comments: list[str] = []
             if (
-                self._asana_comment_baseline_version >= 1
+                getattr(self, "_asana_comment_baseline_version", 0) >= 1
                 and helper is self._helper_A
                 and helper.other is self._helper_B
             ):

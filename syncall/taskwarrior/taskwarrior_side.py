@@ -197,7 +197,6 @@ class TaskWarriorSide(SyncSide):
             self._items_cache[str(item["uuid"])] = item  # type: ignore
         item["uuid"] = str(item["uuid"])
         return item if item["status"] != "deleted" else None  # type: ignore
-
     @staticmethod
     def _annotation_source_entry(annotation: object) -> datetime.datetime | None:
         source_entry = getattr(annotation, "source_entry", None)
@@ -1001,3 +1000,6 @@ class TaskWarriorSide(SyncSide):
                 item["uuid"] = str(item["uuid"])
 
             if "modified" in item:
+                item["modified"] = parse_datetime_(item["modified"])
+
+        return SyncSide._items_are_identical(item1, item2, keys)

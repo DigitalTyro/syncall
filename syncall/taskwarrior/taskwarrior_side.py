@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import hashlib
 import json
 import tempfile
 import unicodedata
@@ -280,6 +281,10 @@ class TaskWarriorSide(SyncSide):
         text = unicodedata.normalize("NFC", cls._annotation_text(annotation))
         return " ".join(text.split())
 
+    @classmethod
+    def _annotation_text_digest(cls, annotation: object) -> str:
+        return hashlib.sha256(cls._annotation_text_key(annotation).encode()).hexdigest()[:20]
+
     @staticmethod
     def _comment_gid(comment: object) -> str | None:
         if isinstance(comment, Mapping):
@@ -317,13 +322,13 @@ class TaskWarriorSide(SyncSide):
         for gid, raw_binding in bindings.items():
             if not isinstance(raw_binding, dict):
                 continue
-            entry = raw_binding.get("entry")
-            text_key = raw_binding.get("text_key")
+            entry = raw_binding.get("e")
+            text_digest = raw_binding.get("h")
             if entry is None:
                 continue
             valid[str(gid)] = {
-                "entry": str(entry),
-                "text_key": str(text_key or ""),
+                "e": str(entry),
+                "h": str(text_digest or ""),
             }
         return valid
 
@@ -386,11 +391,41 @@ class TaskWarriorSide(SyncSide):
         annotations: Sequence[object],
         used: set[int],
         text_key: str,
+        *,
+        target_entry: datetime.datetime | None = None,
+    ) -> int | None:
+        matches = [
+            index
+            for index, annotation in enumerate(annotations)
+            if index not in used and cls._annotation_text_key(annotation) == text_key
+        ]
+        if not matches or target_entry is None:
+            return matches[0] if matches else None
+
+        def distance(index: int) -> float:
+            annotation_entry = cls._annotation_entry(annotations[index])
+            if annotation_entry is None:
+                return float("inf")
+            if annotation_entry.tzinfo is None:
+                annotation_entry = annotation_entry.replace(tzinfo=datetime.UTC)
+            target = target_entry
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=datetime.UTC)
+            return abs((annotation_entry - target).total_seconds())
+
+        return min(matches, key=distance)
+
+    @classmethod
+    def _find_annotation_by_digest(
+        cls,
+        annotations: Sequence[object],
+        used: set[int],
+        text_digest: str,
     ) -> int | None:
         for index, annotation in enumerate(annotations):
             if index in used:
                 continue
-            if cls._annotation_text_key(annotation) == text_key:
+            if cls._annotation_text_digest(annotation) == text_digest:
                 return index
         return None
 
@@ -426,8 +461,8 @@ class TaskWarriorSide(SyncSide):
         # timestamps were subsequently reconciled or formatting changed.
         for gid, binding in bindings.items():
             remote = remote_by_gid.get(gid)
-            entry = binding["entry"]
-            text_key = binding.get("text_key", "")
+            entry = binding["e"]
+            text_digest = binding.get("h", "")
             annotation_index = self._find_annotation_by_entry(annotations, used_annotations, entry)
 
             if annotation_index is None and remote is not None:
@@ -435,7 +470,14 @@ class TaskWarriorSide(SyncSide):
                 annotation_index = self._find_annotation_by_text(
                     annotations,
                     used_annotations,
-                    remote_text_key or text_key,
+                    remote_text_key,
+                    target_entry=self._comment_created_at(remote),
+                )
+            elif annotation_index is None and text_digest:
+                annotation_index = self._find_annotation_by_digest(
+                    annotations,
+                    used_annotations,
+                    text_digest,
                 )
 
             if annotation_index is not None:
@@ -443,11 +485,11 @@ class TaskWarriorSide(SyncSide):
                 annotation_entry = self._annotation_entry(annotations[annotation_index])
                 if annotation_entry is not None:
                     entry = self._format_tw_datetime(annotation_entry)
-                text_key = self._annotation_text_key(annotations[annotation_index])
+                text_digest = self._annotation_text_digest(annotations[annotation_index])
 
             # Keep the binding even when the remote comment disappeared. That tombstone stops
             # a lingering local copy of a deleted Asana comment being resurrected outbound.
-            rebuilt[gid] = {"entry": entry, "text_key": text_key}
+            rebuilt[gid] = {"e": entry, "h": text_digest}
             if remote is not None:
                 used_remote.add(gid)
 
@@ -470,8 +512,8 @@ class TaskWarriorSide(SyncSide):
             used_annotations.add(annotation_index)
             used_remote.add(gid)
             rebuilt[gid] = {
-                "entry": entry,
-                "text_key": self._annotation_text_key(annotations[annotation_index]),
+                "e": entry,
+                "h": self._annotation_text_digest(annotations[annotation_index]),
             }
 
         # Legacy/bootstrap fallback: pair remaining comments one-to-one by normalized text.
@@ -483,6 +525,7 @@ class TaskWarriorSide(SyncSide):
                 annotations,
                 used_annotations,
                 text_key,
+                target_entry=self._comment_created_at(remote),
             )
             if annotation_index is None:
                 continue
@@ -492,8 +535,8 @@ class TaskWarriorSide(SyncSide):
             used_annotations.add(annotation_index)
             used_remote.add(gid)
             rebuilt[gid] = {
-                "entry": self._format_tw_datetime(annotation_entry),
-                "text_key": text_key,
+                "e": self._format_tw_datetime(annotation_entry),
+                "h": self._annotation_text_digest(annotations[annotation_index]),
             }
 
         self._persist_comment_state(item_id, raw_task, rebuilt)

@@ -224,8 +224,16 @@ def _minimal_sync_aggregator(tmp_path) -> Aggregator:
 
     side_A = MagicMock()
     side_A.get_all_items.return_value = [{"gid": "a1", "name": "A"}]
+    # This generic fixture intentionally models sides without the optional Asana/TW
+    # comment-reconciliation capabilities. Bare MagicMocks manufacture arbitrary callable
+    # attributes, which would otherwise make Aggregator._sync_comment_histories() think these
+    # unrelated test doubles support the comment protocol.
+    side_A.get_comments_live = None
+    side_A.ensure_comments = None
+
     side_B = MagicMock()
     side_B.get_all_items.return_value = [{"uuid": "b1", "description": "B"}]
+    side_B.reconcile_asana_comment_state = None
 
     aggregator._helper_A = helper_A
     aggregator._helper_B = helper_B
@@ -245,8 +253,6 @@ def _minimal_sync_aggregator(tmp_path) -> Aggregator:
     (tmp_path / "b").mkdir()
     aggregator._remove_serdes_files = MagicMock()
     aggregator.flush_correspondences = MagicMock()
-    aggregator._asana_comment_baseline_version = 1
-    aggregator._asana_comment_baseline_key = "append_only_asana_comments_version"
     aggregator.prefs_manager = {}
     return aggregator
 

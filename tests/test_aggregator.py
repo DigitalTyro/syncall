@@ -477,7 +477,6 @@ def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
     assert ("Tw", "tw-1") in aggregator._written_serdes
 
 
-
 def test_collects_only_annotations_new_since_last_tw_snapshot(tmp_path) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()
@@ -564,7 +563,9 @@ def test_does_not_collect_annotations_before_upgrade_baseline(tmp_path) -> None:
     tw_side.new_annotations_since.assert_not_called()
 
 
-def test_collecting_comments_is_independent_of_whole_task_conflict_winner(tmp_path) -> None:
+def test_collecting_comments_is_independent_of_whole_task_conflict_winner(
+    tmp_path,
+) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()
     helper_A.name = "Asana"
@@ -646,12 +647,17 @@ def test_append_new_comments_checkpoints_post_comment_asana_state(tmp_path) -> N
     )
     assert ("Asana", "asana-1") in aggregator._written_serdes
 
+
 def test_comment_baseline_is_enabled_only_after_successful_sync_state(tmp_path) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     aggregator._asana_comment_baseline_version = 0
     aggregator._asana_comment_baseline_key = "append_only_asana_comments_version"
     aggregator.prefs_manager = {}
     aggregator.flush_correspondences = MagicMock()
+    aggregator._side_A = MagicMock()
+    aggregator._side_A.ensure_comments = MagicMock()
+    aggregator._side_B = MagicMock()
+    aggregator._side_B.new_annotations_since = MagicMock()
 
     aggregator._enable_append_only_asana_comments_after_baseline()
 

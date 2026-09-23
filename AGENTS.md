@@ -28,8 +28,8 @@ Taskwarrior contains a readable but **lossy projection** of Asana rich text. A r
 - Do not regenerate and replace an existing Asana description wholesale from Taskwarrior Markdown.
 - Do not use whole-task `modified_at` timestamps alone to decide which notes version wins.
 - Do not automatically resolve a task where both Asana notes and Taskwarrior notes have independently changed.
-- Do not upload all Taskwarrior annotations that lack an Asana source ID when append-only comment sync is introduced; pre-existing local annotations need a migration/baseline.
-- Existing Asana comments must remain immutable from Taskwarrior. Outbound comment support is append-only for genuinely new Taskwarrior annotations detected since the last successful TW snapshot, after a one-time upgrade baseline.
+- Do not infer comment identity from syncall serdes/cache alone. Reconcile each mapped task against live Asana comment GIDs/timestamps/text and the durable Taskwarrior comment ledger before deciding an annotation is outbound.
+- Existing Asana comments must remain immutable from Taskwarrior. Outbound comment support is append-only and must use the durable, per-task comment identity ledger stored in Taskwarrior (`asana_comment_state`). It must self-heal from live Asana history when syncall caches/preferences are missing or stale.
 - New Taskwarrior → Asana task creation is a separate path and may continue to create initial notes/comments after identity has been checkpointed.
 - Any future two-way notes implementation must fail closed on ambiguity and include the migration and regression tests described in the detailed safety document.
 

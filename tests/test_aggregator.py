@@ -664,3 +664,32 @@ def test_comment_baseline_is_enabled_only_after_successful_sync_state(tmp_path) 
     assert aggregator.prefs_manager["append_only_asana_comments_version"] == 1
     assert aggregator._asana_comment_baseline_version == 1
     aggregator.flush_correspondences.assert_called_once()
+
+
+def test_failed_comment_append_does_not_commit_tw_source_snapshot(tmp_path) -> None:
+    aggregator = _minimal_sync_aggregator(tmp_path)
+    changes_A = MagicMock()
+    changes_A.new = set()
+    changes_A.modified = set()
+    changes_A.deleted = set()
+    changes_B = MagicMock()
+    changes_B.new = set()
+    changes_B.modified = {"b1"}
+    changes_B.deleted = set()
+    aggregator.detect_changes = MagicMock(side_effect=[changes_A, changes_B])
+    aggregator._count_sync_operations = MagicMock(return_value=1)
+    aggregator._collect_new_asana_comments = MagicMock(
+        return_value={"a1": ["New local comment"]},
+    )
+    aggregator._append_new_asana_comments = MagicMock(
+        side_effect=RuntimeError("comment append failed"),
+    )
+
+    with (
+        patch("syncall.aggregator.pickle_dump") as pickle_dump_mock,
+        pytest.raises(RuntimeError, match="comment append failed"),
+    ):
+        aggregator.sync()
+
+    pickle_dump_mock.assert_not_called()
+    assert aggregator._operation_failed is True

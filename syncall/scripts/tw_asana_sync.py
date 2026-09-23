@@ -374,7 +374,6 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "Taskwarrior task(s).",
             )
 
-
     sync_lock.close()
     return 0
 

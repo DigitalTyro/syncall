@@ -353,6 +353,10 @@ class AsanaSide(SyncSide):
             raise RuntimeError(f"Failed to retrieve newly created Asana task {item_id}.")
         return refreshed
 
+    def get_comments_live(self, item_id: AsanaGID) -> tuple[AsanaComment, ...]:
+        """Return live Asana comments, bypassing the local comment cache."""
+        return self._get_comments(item_id)
+
     def ensure_comments(
         self,
         item_id: AsanaGID,

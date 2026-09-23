@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from syncall.asana.asana_task import AsanaComment
 from syncall.taskwarrior.taskwarrior_side import TaskWarriorSide
 from syncall.types import SyncAnnotation
 
@@ -23,6 +24,7 @@ def _side_with_export(raw_task: dict) -> tuple[TaskWarriorSide, MagicMock, list[
 
     tw._execute.side_effect = capture_import
     side._tw = tw
+    side._items_cache = {str(raw_task.get("uuid") or ""): raw_task}
     side._reload_items = False
     return side, tw, imported
 
@@ -315,114 +317,248 @@ def test_clear_pending_asana_comments_removes_recovery_marker() -> None:
     assert side._reload_items is True
 
 
-def test_new_annotations_since_uses_entry_identity_not_text() -> None:
-    previous = {
+
+def test_reconcile_comment_state_rebuilds_from_remote_gid_and_timestamp() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
         "annotations": [
             {
-                "entry": "20260921T120100Z",
-                "description": "Original text",
+                "entry": "20240105T091500Z",
+                "description": "Imported Asana comment",
             },
         ],
     }
-    current = {
+    side, _, imported = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "Imported Asana comment",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    unsynced = side.reconcile_asana_comment_state("tw-1", raw_task, remote)
+
+    assert unsynced == []
+    assert len(imported) == 1
+    state = json.loads(imported[0]["asana_comment_state"])
+    assert state["version"] == 1
+    assert state["bindings"]["story-1"]["e"] == "20240105T091500Z"
+
+
+def test_reconcile_comment_state_backfills_missed_local_annotation() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
         "annotations": [
             {
-                "entry": "20260921T120100Z",
-                "description": "Edited locally",
+                "entry": "20240105T091500Z",
+                "description": "Already remote",
             },
             {
                 "entry": "20260923T170000Z",
-                "description": "Brand new comment",
+                "description": "Missed local comment",
             },
         ],
     }
+    side, _, _ = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "Already remote",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
 
-    assert TaskWarriorSide.new_annotations_since(previous, current) == [
-        "Brand new comment",
+    unsynced = side.reconcile_asana_comment_state("tw-1", raw_task, remote)
+
+    assert unsynced == ["Missed local comment"]
+
+
+def test_reconcile_comment_state_recovers_when_syncall_caches_are_gone() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "annotations": [
+            {
+                "entry": "20260921T120100Z",
+                "description": "Imported Asana comment",
+            },
+        ],
+    }
+    side, _, imported = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "Imported Asana comment",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    # No asana_comment_state exists and the annotation has the old pre-repair timestamp.
+    unsynced = side.reconcile_asana_comment_state("tw-1", raw_task, remote)
+
+    assert unsynced == []
+    state = json.loads(imported[0]["asana_comment_state"])
+    assert "story-1" in state["bindings"]
+
+
+def test_reconcile_comment_state_does_not_repost_edited_bound_annotation() -> None:
+    original = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Original remote text",
+            },
+        ],
+    }
+    side, _, imported = _side_with_export(original)
+    remote = [
+        AsanaComment(
+            "Original remote text",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
+    assert side.reconcile_asana_comment_state("tw-1", original, remote) == []
+    state = imported[-1]["asana_comment_state"]
+
+    edited = {
+        **original,
+        "asana_comment_state": state,
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Edited locally but same annotation",
+            },
+        ],
+    }
+    side._tw._get_json.return_value = [edited]
+    side._items_cache["tw-1"] = edited
+    imported.clear()
+
+    assert side.reconcile_asana_comment_state("tw-1", edited, remote) == []
+    assert imported
+
+
+def test_deleted_remote_comment_tombstone_prevents_resurrection() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "asana_comment_state": json.dumps(
+            {
+                "version": 1,
+                "bindings": {
+                    "story-deleted": {
+                        "e": "20240105T091500Z",
+                        "h": TaskWarriorSide._annotation_text_digest("Deleted remotely"),
+                    },
+                },
+            },
+        ),
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Deleted remotely",
+            },
+        ],
+    }
+    side, _, _ = _side_with_export(raw_task)
+
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, []) == []
+
+
+def test_duplicate_text_prefers_remote_created_time_and_keeps_new_local_duplicate() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "annotations": [
+            {
+                "entry": "20240105T091600Z",
+                "description": "Same text",
+            },
+            {
+                "entry": "20260923T170000Z",
+                "description": "Same text",
+            },
+        ],
+    }
+    side, _, _ = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "Same text",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == ["Same text"]
+
+
+def test_reconcile_comment_state_imports_missing_remote_annotation_directly() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "annotations": [],
+    }
+    side, _, imported = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "New remote comment",
+            gid="story-new",
+            created_at=datetime.datetime(2026, 9, 23, 17, 0, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == []
+    assert imported[-1]["annotations"] == [
+        {
+            "entry": "20260923T170000Z",
+            "description": "New remote comment",
+        },
     ]
 
 
-def test_new_annotations_since_does_not_publish_preexisting_duplicates() -> None:
-    previous = {
+def test_bound_comment_does_not_capture_new_same_text_annotation() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "asana_comment_state": json.dumps(
+            {
+                "version": 1,
+                "bindings": {
+                    "story-1": {
+                        "e": "20240105T091500Z",
+                        "h": TaskWarriorSide._annotation_text_digest("Same text"),
+                    },
+                },
+            },
+        ),
         "annotations": [
-            {
-                "entry": "20260921T120100Z",
-                "description": "Same text",
-            },
-            {
-                "entry": "20260921T120200Z",
-                "description": "Same text",
-            },
-        ],
-    }
-    current = {
-        "annotations": [
-            {
-                "entry": "20260921T120100Z",
-                "description": "Same text",
-            },
-            {
-                "entry": "20260921T120200Z",
-                "description": "Same text",
-            },
             {
                 "entry": "20260923T170000Z",
                 "description": "Same text",
             },
         ],
     }
+    side, _, _ = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            "Same text",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
+        ),
+    ]
 
-    assert TaskWarriorSide.new_annotations_since(previous, current) == ["Same text"]
-
-
-def test_new_annotations_since_fails_closed_without_entry_timestamp() -> None:
-    previous = {"annotations": []}
-    current = {
-        "annotations": [
-            {"description": "No stable timestamp"},
-        ],
-    }
-
-    assert TaskWarriorSide.new_annotations_since(previous, current) == []
-
-
-def test_timestamp_repair_does_not_turn_imported_comment_into_new_outbound_comment() -> None:
-    previous = {
-        "annotations": [
-            {
-                "entry": "20260921T120100Z",
-                "description": "Imported Asana comment",
-            },
-        ],
-    }
-    current = {
-        "annotations": [
-            {
-                "entry": "20240105T091500Z",
-                "description": "Imported Asana comment",
-            },
-        ],
-    }
-
-    assert TaskWarriorSide.new_annotations_since(previous, current) == []
-
-
-def test_timestamp_repair_fallback_normalizes_whitespace_and_unicode() -> None:
-    previous = {
-        "annotations": [
-            {
-                "entry": "20260921T120100Z",
-                "description": "Café   first\tline\nsecond line",
-            },
-        ],
-    }
-    current = {
-        "annotations": [
-            {
-                "entry": "20240105T091500Z",
-                "description": "Cafe\u0301 first line second line",
-            },
-        ],
-    }
-
-    assert TaskWarriorSide.new_annotations_since(previous, current) == []
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == ["Same text"]

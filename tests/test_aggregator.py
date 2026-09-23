@@ -477,7 +477,8 @@ def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
     assert ("Tw", "tw-1") in aggregator._written_serdes
 
 
-def test_collects_only_annotations_new_since_last_tw_snapshot(tmp_path) -> None:
+
+def test_refresh_live_comment_snapshots_updates_mapped_asana_items() -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()
     helper_A.name = "Asana"
@@ -485,46 +486,66 @@ def test_collects_only_annotations_new_since_last_tw_snapshot(tmp_path) -> None:
     helper_B.name = "Tw"
     helper_A.other = helper_B
     helper_B.other = helper_A
+    asana_item = MagicMock()
+    asana_item.comments = ()
+    asana_side = MagicMock()
+    asana_side.get_comments_live.return_value = ("Live comment",)
 
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = asana_side
+    aggregator._side_B = MagicMock()
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": asana_item}
+    aggregator._live_asana_comments = {}
+
+    aggregator._refresh_live_comment_snapshots()
+
+    assert asana_item.comments == ("Live comment",)
+    assert aggregator._live_asana_comments == {"asana-1": ("Live comment",)}
+
+
+def test_collect_comment_backfill_does_not_depend_on_serdes_cache() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.name = "Asana"
+    helper_B = MagicMock()
+    helper_B.name = "Tw"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
     asana_side = MagicMock()
     asana_side.ensure_comments = MagicMock()
+    asana_side.get_comments_live.return_value = ("Already remote",)
     tw_side = MagicMock()
-    tw_side.new_annotations_since.return_value = ["New local comment"]
+    tw_side.reconcile_asana_comment_state.return_value = ["Missed local comment"]
 
     aggregator._helper_A = helper_A
     aggregator._helper_B = helper_B
     aggregator._side_A = asana_side
     aggregator._side_B = tw_side
     aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": {"gid": "asana-1"}}
     aggregator._items_B = {
         "tw-1": {
             "uuid": "tw-1",
             "annotations": [
-                {"entry": "20260923T170000Z", "description": "New local comment"},
+                {"entry": "20260923T170000Z", "description": "Missed local comment"},
             ],
         },
     }
-    aggregator._asana_comment_baseline_version = 1
-    aggregator._get_serdes_dirs = MagicMock(
-        return_value=(tmp_path / "asana", tmp_path / "tw"),
+    aggregator._live_asana_comments = {}
+
+    pending = aggregator._collect_new_asana_comments()
+
+    assert pending == {"asana-1": ["Missed local comment"]}
+    tw_side.reconcile_asana_comment_state.assert_called_once_with(
+        "tw-1",
+        aggregator._items_B["tw-1"],
+        ("Already remote",),
     )
-    (tmp_path / "asana").mkdir()
-    (tmp_path / "tw").mkdir()
-    (tmp_path / "tw" / "tw-1").write_bytes(b"snapshot")
-
-    changes_A = MagicMock()
-    changes_A.deleted = set()
-    changes_B = MagicMock()
-    changes_B.modified = {"tw-1"}
-
-    with patch("syncall.aggregator.pickle_load", return_value={"annotations": []}):
-        pending = aggregator._collect_new_asana_comments(changes_A, changes_B)
-
-    assert pending == {"asana-1": ["New local comment"]}
-    tw_side.new_annotations_since.assert_called_once()
 
 
-def test_does_not_collect_annotations_before_upgrade_baseline(tmp_path) -> None:
+def test_collect_comment_backfill_runs_even_without_generic_tw_change() -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()
     helper_A.name = "Asana"
@@ -532,104 +553,50 @@ def test_does_not_collect_annotations_before_upgrade_baseline(tmp_path) -> None:
     helper_B.name = "Tw"
     helper_A.other = helper_B
     helper_B.other = helper_A
-
     asana_side = MagicMock()
     asana_side.ensure_comments = MagicMock()
+    asana_side.get_comments_live.return_value = ()
     tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.return_value = ["Old missed annotation"]
 
     aggregator._helper_A = helper_A
     aggregator._helper_B = helper_B
     aggregator._side_A = asana_side
     aggregator._side_B = tw_side
     aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
-    aggregator._items_B = {
-        "tw-1": {
-            "uuid": "tw-1",
-            "annotations": [
-                {"entry": "20260923T170000Z", "description": "Historical local annotation"},
-            ],
-        },
+    aggregator._items_A = {"asana-1": {"gid": "asana-1"}}
+    aggregator._items_B = {"tw-1": {"uuid": "tw-1", "annotations": []}}
+    aggregator._live_asana_comments = {}
+
+    assert aggregator._collect_new_asana_comments() == {
+        "asana-1": ["Old missed annotation"],
     }
-    aggregator._asana_comment_baseline_version = 0
-
-    changes_A = MagicMock()
-    changes_A.deleted = set()
-    changes_B = MagicMock()
-    changes_B.modified = {"tw-1"}
-
-    pending = aggregator._collect_new_asana_comments(changes_A, changes_B)
-
-    assert pending == {}
-    tw_side.new_annotations_since.assert_not_called()
 
 
-def test_collecting_comments_is_independent_of_whole_task_conflict_winner(
-    tmp_path,
-) -> None:
+def test_append_new_comments_rebuilds_identity_from_live_result(tmp_path) -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()
     helper_A.name = "Asana"
-    helper_B = MagicMock()
-    helper_B.name = "Tw"
-    helper_A.other = helper_B
-    helper_B.other = helper_A
-
     asana_side = MagicMock()
-    asana_side.ensure_comments = MagicMock()
+    live_comments = ("New local comment",)
+    asana_side.get_comments_live.return_value = live_comments
+    current_asana = {"gid": "asana-1", "name": "Task", "comments": live_comments}
+    asana_side.get_item.return_value = current_asana
     tw_side = MagicMock()
-    tw_side.new_annotations_since.return_value = ["Keep this TW comment"]
+    current_tw = {"uuid": "tw-1", "annotations": []}
+    tw_side.get_item.return_value = current_tw
 
     aggregator._helper_A = helper_A
-    aggregator._helper_B = helper_B
     aggregator._side_A = asana_side
     aggregator._side_B = tw_side
     aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
-    aggregator._items_B = {
-        "tw-1": {
-            "uuid": "tw-1",
-            "annotations": [
-                {"entry": "20260923T170000Z", "description": "Keep this TW comment"},
-            ],
-        },
-    }
-    aggregator._asana_comment_baseline_version = 1
-    aggregator._get_serdes_dirs = MagicMock(
-        return_value=(tmp_path / "asana", tmp_path / "tw"),
-    )
-    (tmp_path / "asana").mkdir()
-    (tmp_path / "tw").mkdir()
-    (tmp_path / "tw" / "tw-1").write_bytes(b"snapshot")
-
-    # Both sides changed. The generic resolver may later choose Asana, but comment
-    # collection happens before that and is therefore not lost with the TW task update.
-    changes_A = MagicMock()
-    changes_A.modified = {"asana-1"}
-    changes_A.deleted = set()
-    changes_B = MagicMock()
-    changes_B.modified = {"tw-1"}
-
-    with patch("syncall.aggregator.pickle_load", return_value={"annotations": []}):
-        pending = aggregator._collect_new_asana_comments(changes_A, changes_B)
-
-    assert pending == {"asana-1": ["Keep this TW comment"]}
-
-
-def test_append_new_comments_checkpoints_post_comment_asana_state(tmp_path) -> None:
-    aggregator = Aggregator.__new__(Aggregator)
-    helper_A = MagicMock()
-    helper_A.name = "Asana"
-    asana_side = MagicMock()
-    current = {"gid": "asana-1", "name": "Task", "comments": ("New local comment",)}
-    asana_side.get_item.return_value = current
-
-    aggregator._helper_A = helper_A
-    aggregator._side_A = asana_side
     aggregator._get_serdes_dirs = MagicMock(
         return_value=(tmp_path / "asana", tmp_path / "tw"),
     )
     (tmp_path / "asana").mkdir()
     (tmp_path / "tw").mkdir()
     aggregator._written_serdes = set()
+    aggregator._live_asana_comments = {}
 
     with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
         aggregator._append_new_asana_comments(
@@ -640,31 +607,16 @@ def test_append_new_comments_checkpoints_post_comment_asana_state(tmp_path) -> N
         "asana-1",
         ["New local comment"],
     )
-    asana_side.get_item.assert_called_once_with("asana-1", use_cached=False)
+    tw_side.reconcile_asana_comment_state.assert_called_once_with(
+        "tw-1",
+        current_tw,
+        live_comments,
+    )
     pickle_dump_mock.assert_called_once_with(
-        current,
+        current_asana,
         tmp_path / "asana" / "asana-1",
     )
     assert ("Asana", "asana-1") in aggregator._written_serdes
-
-
-def test_comment_baseline_is_enabled_only_after_successful_sync_state(tmp_path) -> None:
-    aggregator = Aggregator.__new__(Aggregator)
-    aggregator._asana_comment_baseline_version = 0
-    aggregator._asana_comment_baseline_key = "append_only_asana_comments_version"
-    aggregator.prefs_manager = {}
-    aggregator.flush_correspondences = MagicMock()
-    aggregator._side_A = MagicMock()
-    aggregator._side_A.ensure_comments = MagicMock()
-    aggregator._side_B = MagicMock()
-    aggregator._side_B.new_annotations_since = MagicMock()
-
-    aggregator._enable_append_only_asana_comments_after_baseline()
-
-    assert aggregator.prefs_manager["append_only_asana_comments_version"] == 1
-    assert aggregator._asana_comment_baseline_version == 1
-    aggregator.flush_correspondences.assert_called_once()
-
 
 def test_failed_comment_append_does_not_commit_tw_source_snapshot(tmp_path) -> None:
     aggregator = _minimal_sync_aggregator(tmp_path)

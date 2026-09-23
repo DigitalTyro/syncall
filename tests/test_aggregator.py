@@ -478,170 +478,149 @@ def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
 
 
 
-def test_refresh_live_comment_snapshots_updates_mapped_asana_items() -> None:
+
+def test_sync_comment_histories_backfills_missed_local_comment() -> None:
     aggregator = Aggregator.__new__(Aggregator)
     helper_A = MagicMock()
     helper_A.name = "Asana"
+    helper_A.id_key = "gid"
     helper_B = MagicMock()
     helper_B.name = "Tw"
+    helper_B.id_key = "uuid"
     helper_A.other = helper_B
     helper_B.other = helper_A
+
     asana_item = MagicMock()
     asana_item.comments = ()
     asana_side = MagicMock()
-    asana_side.get_comments_live.return_value = ("Live comment",)
+    asana_side.get_comments_live.side_effect = [
+        ("Already remote",),
+        ("Already remote", "Missed local comment"),
+    ]
+    tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.side_effect = [
+        ["Missed local comment"],
+        [],
+    ]
+    tw_side.get_item.return_value = {
+        "uuid": "tw-1",
+        "annotations": [
+            {"entry": "20260923T170000Z", "description": "Missed local comment"},
+        ],
+    }
 
     aggregator._helper_A = helper_A
     aggregator._helper_B = helper_B
     aggregator._side_A = asana_side
-    aggregator._side_B = MagicMock()
+    aggregator._side_B = tw_side
     aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
     aggregator._items_A = {"asana-1": asana_item}
+    aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
     aggregator._live_asana_comments = {}
 
-    aggregator._refresh_live_comment_snapshots()
-
-    assert asana_item.comments == ("Live comment",)
-    assert aggregator._live_asana_comments == {"asana-1": ("Live comment",)}
-
-
-def test_collect_comment_backfill_does_not_depend_on_serdes_cache() -> None:
-    aggregator = Aggregator.__new__(Aggregator)
-    helper_A = MagicMock()
-    helper_A.name = "Asana"
-    helper_B = MagicMock()
-    helper_B.name = "Tw"
-    helper_A.other = helper_B
-    helper_B.other = helper_A
-    asana_side = MagicMock()
-    asana_side.ensure_comments = MagicMock()
-    asana_side.get_comments_live.return_value = ("Already remote",)
-    tw_side = MagicMock()
-    tw_side.reconcile_asana_comment_state.return_value = ["Missed local comment"]
-
-    aggregator._helper_A = helper_A
-    aggregator._helper_B = helper_B
-    aggregator._side_A = asana_side
-    aggregator._side_B = tw_side
-    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
-    aggregator._items_A = {"asana-1": {"gid": "asana-1"}}
-    aggregator._items_B = {
-        "tw-1": {
-            "uuid": "tw-1",
-            "annotations": [
-                {"entry": "20260923T170000Z", "description": "Missed local comment"},
-            ],
-        },
-    }
-    aggregator._live_asana_comments = {}
-
-    pending = aggregator._collect_new_asana_comments()
-
-    assert pending == {"asana-1": ["Missed local comment"]}
-    tw_side.reconcile_asana_comment_state.assert_called_once_with(
-        "tw-1",
-        aggregator._items_B["tw-1"],
-        ("Already remote",),
-    )
-
-
-def test_collect_comment_backfill_runs_even_without_generic_tw_change() -> None:
-    aggregator = Aggregator.__new__(Aggregator)
-    helper_A = MagicMock()
-    helper_A.name = "Asana"
-    helper_B = MagicMock()
-    helper_B.name = "Tw"
-    helper_A.other = helper_B
-    helper_B.other = helper_A
-    asana_side = MagicMock()
-    asana_side.ensure_comments = MagicMock()
-    asana_side.get_comments_live.return_value = ()
-    tw_side = MagicMock()
-    tw_side.reconcile_asana_comment_state.return_value = ["Old missed annotation"]
-
-    aggregator._helper_A = helper_A
-    aggregator._helper_B = helper_B
-    aggregator._side_A = asana_side
-    aggregator._side_B = tw_side
-    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
-    aggregator._items_A = {"asana-1": {"gid": "asana-1"}}
-    aggregator._items_B = {"tw-1": {"uuid": "tw-1", "annotations": []}}
-    aggregator._live_asana_comments = {}
-
-    assert aggregator._collect_new_asana_comments() == {
-        "asana-1": ["Old missed annotation"],
-    }
-
-
-def test_append_new_comments_rebuilds_identity_from_live_result(tmp_path) -> None:
-    aggregator = Aggregator.__new__(Aggregator)
-    helper_A = MagicMock()
-    helper_A.name = "Asana"
-    asana_side = MagicMock()
-    live_comments = ("New local comment",)
-    asana_side.get_comments_live.return_value = live_comments
-    current_asana = {"gid": "asana-1", "name": "Task", "comments": live_comments}
-    asana_side.get_item.return_value = current_asana
-    tw_side = MagicMock()
-    current_tw = {"uuid": "tw-1", "annotations": []}
-    tw_side.get_item.return_value = current_tw
-
-    aggregator._helper_A = helper_A
-    aggregator._side_A = asana_side
-    aggregator._side_B = tw_side
-    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
-    aggregator._get_serdes_dirs = MagicMock(
-        return_value=(tmp_path / "asana", tmp_path / "tw"),
-    )
-    (tmp_path / "asana").mkdir()
-    (tmp_path / "tw").mkdir()
-    aggregator._written_serdes = set()
-    aggregator._live_asana_comments = {}
-
-    with patch("syncall.aggregator.pickle_dump") as pickle_dump_mock:
-        aggregator._append_new_asana_comments(
-            {"asana-1": ["New local comment"]},
-        )
+    aggregator._sync_comment_histories()
 
     asana_side.ensure_comments.assert_called_once_with(
         "asana-1",
-        ["New local comment"],
+        ["Missed local comment"],
     )
+    assert tw_side.reconcile_asana_comment_state.call_count == 2
+    assert asana_item.comments == ("Already remote", "Missed local comment")
+
+
+def test_sync_comment_histories_imports_remote_comment_without_generic_cache() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.name = "Asana"
+    helper_A.id_key = "gid"
+    helper_B = MagicMock()
+    helper_B.name = "Tw"
+    helper_B.id_key = "uuid"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
+
+    asana_item = MagicMock()
+    asana_item.comments = ()
+    asana_side = MagicMock()
+    asana_side.get_comments_live.return_value = ("New remote comment",)
+    tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.return_value = []
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = asana_side
+    aggregator._side_B = tw_side
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": asana_item}
+    aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
+    aggregator._live_asana_comments = {}
+
+    aggregator._sync_comment_histories()
+
     tw_side.reconcile_asana_comment_state.assert_called_once_with(
         "tw-1",
-        current_tw,
-        live_comments,
+        aggregator._items_B["tw-1"],
+        ("New remote comment",),
     )
-    pickle_dump_mock.assert_called_once_with(
-        current_asana,
-        tmp_path / "asana" / "asana-1",
-    )
-    assert ("Asana", "asana-1") in aggregator._written_serdes
+    asana_side.ensure_comments.assert_not_called()
+    assert asana_item.comments == ("New remote comment",)
 
-def test_failed_comment_append_does_not_commit_tw_source_snapshot(tmp_path) -> None:
-    aggregator = _minimal_sync_aggregator(tmp_path)
-    changes_A = MagicMock()
-    changes_A.new = set()
-    changes_A.modified = set()
-    changes_A.deleted = set()
-    changes_B = MagicMock()
-    changes_B.new = set()
-    changes_B.modified = {"b1"}
-    changes_B.deleted = set()
-    aggregator.detect_changes = MagicMock(side_effect=[changes_A, changes_B])
-    aggregator._count_sync_operations = MagicMock(return_value=1)
-    aggregator._collect_new_asana_comments = MagicMock(
-        return_value={"a1": ["New local comment"]},
-    )
-    aggregator._append_new_asana_comments = MagicMock(
-        side_effect=RuntimeError("comment append failed"),
-    )
 
-    with (
-        patch("syncall.aggregator.pickle_dump") as pickle_dump_mock,
-        pytest.raises(RuntimeError, match="comment append failed"),
-    ):
-        aggregator.sync()
+def test_sync_comment_histories_fails_if_append_does_not_converge() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.name = "Asana"
+    helper_B = MagicMock()
+    helper_B.name = "Tw"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
 
-    pickle_dump_mock.assert_not_called()
-    assert aggregator._operation_failed is True
+    asana_item = MagicMock()
+    asana_item.comments = ()
+    asana_side = MagicMock()
+    asana_side.get_comments_live.side_effect = [(), ("Still not bound",)]
+    tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.side_effect = [
+        ["Local comment"],
+        ["Local comment"],
+    ]
+    tw_side.get_item.return_value = {"uuid": "tw-1"}
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = asana_side
+    aggregator._side_B = tw_side
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": asana_item}
+    aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
+    aggregator._live_asana_comments = {}
+
+    with pytest.raises(RuntimeError, match="still has unsynchronized comments"):
+        aggregator._sync_comment_histories()
+
+
+def test_comment_sync_does_not_use_serdes_or_global_baseline() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.name = "Asana"
+    helper_B = MagicMock()
+    helper_B.name = "Tw"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
+    asana_side = MagicMock()
+    asana_side.get_comments_live.return_value = ()
+    tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.return_value = []
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = asana_side
+    aggregator._side_B = tw_side
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": {}}
+    aggregator._items_B = {"tw-1": {}}
+    aggregator._live_asana_comments = {}
+
+    aggregator._sync_comment_histories()
+
+    tw_side.reconcile_asana_comment_state.assert_called_once()

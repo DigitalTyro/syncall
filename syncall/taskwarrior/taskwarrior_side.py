@@ -28,6 +28,8 @@ tw_client_key = "client"
 tw_notes_key = "notes"
 tw_asana_gid_key = "asana_gid"
 tw_asana_pending_comments_key = "asana_pending_comments"
+tw_asana_comment_state_key = "asana_comment_state"
+ASANA_COMMENT_STATE_VERSION = 1
 
 OrderByType = Literal[
     "description",
@@ -49,6 +51,10 @@ TW_CONFIG_DEFAULT_OVERRIDES = {
         tw_asana_pending_comments_key: {
             "type": "string",
             "label": "Asana Pending Comments",
+        },
+        tw_asana_comment_state_key: {
+            "type": "string",
+            "label": "Asana Comment State",
         },
     },
 }
@@ -274,67 +280,238 @@ class TaskWarriorSide(SyncSide):
         text = unicodedata.normalize("NFC", cls._annotation_text(annotation))
         return " ".join(text.split())
 
+    @staticmethod
+    def _comment_gid(comment: object) -> str | None:
+        if isinstance(comment, Mapping):
+            gid = comment.get("gid")
+        else:
+            gid = getattr(comment, "gid", None)
+        return str(gid) if gid is not None else None
+
+    @staticmethod
+    def _comment_created_at(comment: object) -> datetime.datetime | None:
+        if isinstance(comment, Mapping):
+            value = comment.get("created_at")
+        else:
+            value = getattr(comment, "created_at", None)
+        if value is None:
+            return None
+        return parse_datetime_(value)
+
     @classmethod
-    def new_annotations_since(
-        cls,
-        previous_item: Mapping[str, Any],
-        current_item: Mapping[str, Any],
-    ) -> list[str]:
-        """Return only annotations not represented by the previous successful snapshot.
+    def _parse_comment_state(cls, raw_value: object) -> dict[str, dict[str, str]]:
+        if not raw_value:
+            return {}
+        try:
+            parsed = json.loads(str(raw_value))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring malformed Taskwarrior Asana comment sync state.")
+            return {}
+        if not isinstance(parsed, dict) or parsed.get("version") != ASANA_COMMENT_STATE_VERSION:
+            return {}
+        bindings = parsed.get("bindings")
+        if not isinstance(bindings, dict):
+            return {}
 
-        Match by Taskwarrior creation timestamp first, so editing an existing annotation's text
-        does not publish a new Asana comment. Then match still-unpaired annotations by normalized
-        text. That conservative fallback is required because syncall may repair an imported
-        Asana annotation's Taskwarrior timestamp after the main sync; the timestamp can therefore
-        legitimately differ from the prior snapshot even though the annotation is not new.
-        """
-        previous = list(previous_item.get("annotations", ()))
-        matched_previous = [False] * len(previous)
-        new_annotations: list[str] = []
-
-        for annotation in current_item.get("annotations", ()):
-            entry = cls._annotation_entry(annotation)
+        valid: dict[str, dict[str, str]] = {}
+        for gid, raw_binding in bindings.items():
+            if not isinstance(raw_binding, dict):
+                continue
+            entry = raw_binding.get("entry")
+            text_key = raw_binding.get("text_key")
             if entry is None:
+                continue
+            valid[str(gid)] = {
+                "entry": str(entry),
+                "text_key": str(text_key or ""),
+            }
+        return valid
+
+    @staticmethod
+    def _serialize_comment_state(bindings: Mapping[str, Mapping[str, str]]) -> str:
+        return json.dumps(
+            {
+                "version": ASANA_COMMENT_STATE_VERSION,
+                "bindings": bindings,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def _persist_comment_state(
+        self,
+        item_id: str,
+        raw_task: dict[str, Any],
+        bindings: Mapping[str, Mapping[str, str]],
+    ) -> None:
+        serialized = self._serialize_comment_state(bindings)
+        if raw_task.get(tw_asana_comment_state_key) == serialized:
+            return
+
+        raw_task[tw_asana_comment_state_key] = serialized
+        raw_task.pop("id", None)
+        raw_task.pop("urgency", None)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as handle:
+            json.dump(raw_task, handle, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            self._tw._execute("import", handle.name)
+
+        cached = self._items_cache.get(str(item_id))
+        if cached is not None:
+            cached[tw_asana_comment_state_key] = serialized  # type: ignore[literal-required]
+        self._reload_items = True
+
+    @classmethod
+    def _find_annotation_by_entry(
+        cls,
+        annotations: Sequence[object],
+        used: set[int],
+        entry: str,
+    ) -> int | None:
+        for index, annotation in enumerate(annotations):
+            if index in used:
+                continue
+            annotation_entry = cls._annotation_entry(annotation)
+            if annotation_entry is None:
+                continue
+            if cls._format_tw_datetime(annotation_entry) == entry:
+                return index
+        return None
+
+    @classmethod
+    def _find_annotation_by_text(
+        cls,
+        annotations: Sequence[object],
+        used: set[int],
+        text_key: str,
+    ) -> int | None:
+        for index, annotation in enumerate(annotations):
+            if index in used:
+                continue
+            if cls._annotation_text_key(annotation) == text_key:
+                return index
+        return None
+
+    def reconcile_asana_comment_state(
+        self,
+        item_id: str,
+        current_item: Mapping[str, Any],
+        remote_comments: Sequence[object],
+    ) -> list[str]:
+        """Rebuild durable comment identity and return genuinely unsynced local annotations.
+
+        The durable ledger lives on the Taskwarrior task itself, so syncall cache or preference
+        loss does not erase comment identity. Missing/stale bindings are reconstructed from live
+        annotation timestamps and normalized text before anything is considered outbound.
+        """
+        raw_task = self._load_exported_task(item_id)
+        if raw_task is None:
+            return []
+
+        annotations = list(raw_task.get("annotations", current_item.get("annotations", ())))
+        bindings = self._parse_comment_state(raw_task.get(tw_asana_comment_state_key))
+        remote_by_gid = {
+            gid: comment
+            for comment in remote_comments
+            if (gid := self._comment_gid(comment)) is not None
+        }
+
+        used_annotations: set[int] = set()
+        used_remote: set[str] = set()
+        rebuilt: dict[str, dict[str, str]] = {}
+
+        # First trust durable GID bindings, repairing their local annotation locator when
+        # timestamps were subsequently reconciled or formatting changed.
+        for gid, binding in bindings.items():
+            remote = remote_by_gid.get(gid)
+            entry = binding["entry"]
+            text_key = binding.get("text_key", "")
+            annotation_index = self._find_annotation_by_entry(annotations, used_annotations, entry)
+
+            if annotation_index is None and remote is not None:
+                remote_text_key = self._annotation_text_key(remote)
+                annotation_index = self._find_annotation_by_text(
+                    annotations,
+                    used_annotations,
+                    remote_text_key or text_key,
+                )
+
+            if annotation_index is not None:
+                used_annotations.add(annotation_index)
+                annotation_entry = self._annotation_entry(annotations[annotation_index])
+                if annotation_entry is not None:
+                    entry = self._format_tw_datetime(annotation_entry)
+                text_key = self._annotation_text_key(annotations[annotation_index])
+
+            # Keep the binding even when the remote comment disappeared. That tombstone stops
+            # a lingering local copy of a deleted Asana comment being resurrected outbound.
+            rebuilt[gid] = {"entry": entry, "text_key": text_key}
+            if remote is not None:
+                used_remote.add(gid)
+
+        # Recover missing identity from exact source timestamps. Imported Asana annotations are
+        # normalized to the comment's created_at, making this reconstruction cache-independent.
+        for gid, remote in remote_by_gid.items():
+            if gid in used_remote:
+                continue
+            created_at = self._comment_created_at(remote)
+            if created_at is None:
+                continue
+            entry = self._format_tw_datetime(created_at)
+            annotation_index = self._find_annotation_by_entry(
+                annotations,
+                used_annotations,
+                entry,
+            )
+            if annotation_index is None:
+                continue
+            used_annotations.add(annotation_index)
+            used_remote.add(gid)
+            rebuilt[gid] = {
+                "entry": entry,
+                "text_key": self._annotation_text_key(annotations[annotation_index]),
+            }
+
+        # Legacy/bootstrap fallback: pair remaining comments one-to-one by normalized text.
+        for gid, remote in remote_by_gid.items():
+            if gid in used_remote:
+                continue
+            text_key = self._annotation_text_key(remote)
+            annotation_index = self._find_annotation_by_text(
+                annotations,
+                used_annotations,
+                text_key,
+            )
+            if annotation_index is None:
+                continue
+            annotation_entry = self._annotation_entry(annotations[annotation_index])
+            if annotation_entry is None:
+                continue
+            used_annotations.add(annotation_index)
+            used_remote.add(gid)
+            rebuilt[gid] = {
+                "entry": self._format_tw_datetime(annotation_entry),
+                "text_key": text_key,
+            }
+
+        self._persist_comment_state(item_id, raw_task, rebuilt)
+
+        unsynced: list[str] = []
+        for index, annotation in enumerate(annotations):
+            if index in used_annotations:
+                continue
+            if self._annotation_entry(annotation) is None:
                 logger.warning(
-                    "Skipping outbound Asana comment for Taskwarrior annotation without "
-                    "a stable creation timestamp.",
+                    f"Skipping outbound comment for Taskwarrior task {item_id}: "
+                    "annotation has no stable creation timestamp.",
                 )
                 continue
-
-            entry_key = cls._format_tw_datetime(entry)
-            entry_match = next(
-                (
-                    index
-                    for index, previous_annotation in enumerate(previous)
-                    if not matched_previous[index]
-                    and (previous_entry := cls._annotation_entry(previous_annotation)) is not None
-                    and cls._format_tw_datetime(previous_entry) == entry_key
-                ),
-                None,
-            )
-            if entry_match is not None:
-                matched_previous[entry_match] = True
-                continue
-
-            text_key = cls._annotation_text_key(annotation)
-            text_match = next(
-                (
-                    index
-                    for index, previous_annotation in enumerate(previous)
-                    if not matched_previous[index]
-                    and cls._annotation_text_key(previous_annotation) == text_key
-                ),
-                None,
-            )
-            if text_match is not None:
-                matched_previous[text_match] = True
-                continue
-
-            text = cls._annotation_text(annotation)
+            text = self._annotation_text(annotation)
             if text:
-                new_annotations.append(text)
-
-        return new_annotations
+                unsynced.append(text)
+        return unsynced
 
     def reconcile_annotation_timestamps(
         self,

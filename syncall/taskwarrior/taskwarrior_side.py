@@ -312,7 +312,10 @@ class TaskWarriorSide(SyncSide):
         except (TypeError, ValueError):
             logger.warning("Ignoring malformed Taskwarrior Asana comment sync state.")
             return {}
-        if not isinstance(parsed, dict) or parsed.get("version") != ASANA_COMMENT_STATE_VERSION:
+        if (
+            not isinstance(parsed, dict)
+            or parsed.get("version") != ASANA_COMMENT_STATE_VERSION
+        ):
             return {}
         bindings = parsed.get("bindings")
         if not isinstance(bindings, dict):
@@ -998,6 +1001,3 @@ class TaskWarriorSide(SyncSide):
                 item["uuid"] = str(item["uuid"])
 
             if "modified" in item:
-                item["modified"] = parse_datetime_(item["modified"])
-
-        return SyncSide._items_are_identical(item1, item2, keys)

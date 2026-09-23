@@ -344,16 +344,22 @@ class TaskWarriorSide(SyncSide):
             sort_keys=True,
         )
 
-    def _persist_comment_state(
+    def _persist_comment_reconciliation(
         self,
         item_id: str,
         raw_task: dict[str, Any],
+        annotations: Sequence[object],
         bindings: Mapping[str, Mapping[str, str]],
-    ) -> None:
+    ) -> bool:
         serialized = self._serialize_comment_state(bindings)
-        if raw_task.get(tw_asana_comment_state_key) == serialized:
-            return
+        annotations_list = list(annotations)
+        if (
+            raw_task.get(tw_asana_comment_state_key) == serialized
+            and list(raw_task.get("annotations", ())) == annotations_list
+        ):
+            return False
 
+        raw_task["annotations"] = annotations_list
         raw_task[tw_asana_comment_state_key] = serialized
         raw_task.pop("id", None)
         raw_task.pop("urgency", None)
@@ -365,8 +371,10 @@ class TaskWarriorSide(SyncSide):
 
         cached = self._items_cache.get(str(item_id))
         if cached is not None:
+            cached["annotations"] = annotations_list  # type: ignore[literal-required]
             cached[tw_asana_comment_state_key] = serialized  # type: ignore[literal-required]
         self._reload_items = True
+        return True
 
     @classmethod
     def _find_annotation_by_entry(
@@ -435,11 +443,11 @@ class TaskWarriorSide(SyncSide):
         current_item: Mapping[str, Any],
         remote_comments: Sequence[object],
     ) -> list[str]:
-        """Rebuild durable comment identity and return genuinely unsynced local annotations.
+        """Converge Asana-backed annotations and return genuinely local-only annotations.
 
-        The durable ledger lives on the Taskwarrior task itself, so syncall cache or preference
-        loss does not erase comment identity. Missing/stale bindings are reconstructed from live
-        annotation timestamps and normalized text before anything is considered outbound.
+        Existing Asana comments are authoritative for their Taskwarrior copies. Stable GID
+        bindings are stored on the Taskwarrior task, rebuilt from live history when necessary,
+        and retained as tombstones after remote deletion.
         """
         raw_task = self._load_exported_task(item_id)
         if raw_task is None:
@@ -456,9 +464,11 @@ class TaskWarriorSide(SyncSide):
         used_annotations: set[int] = set()
         used_remote: set[str] = set()
         rebuilt: dict[str, dict[str, str]] = {}
+        delete_indices: set[int] = set()
 
-        # First trust durable GID bindings, repairing their local annotation locator when
-        # timestamps were subsequently reconciled or formatting changed.
+        # Reconcile durable bindings first. A bound Asana comment controls the corresponding
+        # local annotation's text/timestamp. A remote deletion removes the local projection but
+        # keeps a tombstone binding to prevent resurrection.
         for gid, binding in bindings.items():
             remote = remote_by_gid.get(gid)
             entry = binding["e"]
@@ -466,11 +476,10 @@ class TaskWarriorSide(SyncSide):
             annotation_index = self._find_annotation_by_entry(annotations, used_annotations, entry)
 
             if annotation_index is None and remote is not None:
-                remote_text_key = self._annotation_text_key(remote)
                 annotation_index = self._find_annotation_by_text(
                     annotations,
                     used_annotations,
-                    remote_text_key,
+                    self._annotation_text_key(remote),
                     target_entry=self._comment_created_at(remote),
                 )
             elif annotation_index is None and text_digest:
@@ -480,66 +489,121 @@ class TaskWarriorSide(SyncSide):
                     text_digest,
                 )
 
+            if remote is None:
+                if annotation_index is not None:
+                    used_annotations.add(annotation_index)
+                    delete_indices.add(annotation_index)
+                rebuilt[gid] = {"e": entry, "h": text_digest}
+                continue
+
+            remote_entry = self._comment_created_at(remote)
+            remote_text = self._annotation_text(remote)
             if annotation_index is not None:
                 used_annotations.add(annotation_index)
-                annotation_entry = self._annotation_entry(annotations[annotation_index])
-                if annotation_entry is not None:
-                    entry = self._format_tw_datetime(annotation_entry)
-                text_digest = self._annotation_text_digest(annotations[annotation_index])
+                existing = annotations[annotation_index]
+                if isinstance(existing, Mapping):
+                    updated = dict(existing)
+                    updated["description"] = remote_text
+                    if remote_entry is not None:
+                        updated["entry"] = self._format_tw_datetime(remote_entry)
+                    annotations[annotation_index] = updated
+                entry_value = (
+                    self._format_tw_datetime(remote_entry)
+                    if remote_entry is not None
+                    else entry
+                )
+            else:
+                if remote_entry is None:
+                    logger.warning(
+                        f"Cannot project Asana comment {gid} onto Taskwarrior task {item_id}: "
+                        "remote comment has no creation timestamp.",
+                    )
+                    rebuilt[gid] = {"e": entry, "h": self._annotation_text_digest(remote)}
+                    used_remote.add(gid)
+                    continue
+                entry_value = self._format_tw_datetime(remote_entry)
+                annotations.append(
+                    {
+                        "entry": entry_value,
+                        "description": remote_text,
+                    },
+                )
+                annotation_index = len(annotations) - 1
+                used_annotations.add(annotation_index)
 
-            # Keep the binding even when the remote comment disappeared. That tombstone stops
-            # a lingering local copy of a deleted Asana comment being resurrected outbound.
-            rebuilt[gid] = {"e": entry, "h": text_digest}
-            if remote is not None:
-                used_remote.add(gid)
-
-        # Recover missing identity from exact source timestamps. Imported Asana annotations are
-        # normalized to the comment's created_at, making this reconstruction cache-independent.
-        for gid, remote in remote_by_gid.items():
-            if gid in used_remote:
-                continue
-            created_at = self._comment_created_at(remote)
-            if created_at is None:
-                continue
-            entry = self._format_tw_datetime(created_at)
-            annotation_index = self._find_annotation_by_entry(
-                annotations,
-                used_annotations,
-                entry,
-            )
-            if annotation_index is None:
-                continue
-            used_annotations.add(annotation_index)
-            used_remote.add(gid)
             rebuilt[gid] = {
-                "e": entry,
-                "h": self._annotation_text_digest(annotations[annotation_index]),
+                "e": entry_value,
+                "h": self._annotation_text_digest(remote),
             }
+            used_remote.add(gid)
 
-        # Legacy/bootstrap fallback: pair remaining comments one-to-one by normalized text.
+        # Recover unbound remote comments from exact source timestamps, then normalized text.
+        # If neither exists locally, create the Taskwarrior projection directly.
         for gid, remote in remote_by_gid.items():
             if gid in used_remote:
                 continue
-            text_key = self._annotation_text_key(remote)
-            annotation_index = self._find_annotation_by_text(
-                annotations,
-                used_annotations,
-                text_key,
-                target_entry=self._comment_created_at(remote),
-            )
+            remote_entry = self._comment_created_at(remote)
+            annotation_index = None
+            if remote_entry is not None:
+                annotation_index = self._find_annotation_by_entry(
+                    annotations,
+                    used_annotations,
+                    self._format_tw_datetime(remote_entry),
+                )
             if annotation_index is None:
-                continue
+                annotation_index = self._find_annotation_by_text(
+                    annotations,
+                    used_annotations,
+                    self._annotation_text_key(remote),
+                    target_entry=remote_entry,
+                )
+
+            if annotation_index is None:
+                if remote_entry is None:
+                    logger.warning(
+                        f"Cannot project Asana comment {gid} onto Taskwarrior task {item_id}: "
+                        "remote comment has no creation timestamp.",
+                    )
+                    continue
+                annotations.append(
+                    {
+                        "entry": self._format_tw_datetime(remote_entry),
+                        "description": self._annotation_text(remote),
+                    },
+                )
+                annotation_index = len(annotations) - 1
+            else:
+                existing = annotations[annotation_index]
+                if isinstance(existing, Mapping):
+                    updated = dict(existing)
+                    updated["description"] = self._annotation_text(remote)
+                    if remote_entry is not None:
+                        updated["entry"] = self._format_tw_datetime(remote_entry)
+                    annotations[annotation_index] = updated
+
+            used_annotations.add(annotation_index)
             annotation_entry = self._annotation_entry(annotations[annotation_index])
             if annotation_entry is None:
                 continue
-            used_annotations.add(annotation_index)
-            used_remote.add(gid)
             rebuilt[gid] = {
                 "e": self._format_tw_datetime(annotation_entry),
-                "h": self._annotation_text_digest(annotations[annotation_index]),
+                "h": self._annotation_text_digest(remote),
+            }
+            used_remote.add(gid)
+
+        if delete_indices:
+            annotations = [
+                annotation
+                for index, annotation in enumerate(annotations)
+                if index not in delete_indices
+            ]
+            used_annotations = {
+                index - sum(deleted < index for deleted in delete_indices)
+                for index in used_annotations
+                if index not in delete_indices
             }
 
-        self._persist_comment_state(item_id, raw_task, rebuilt)
+        self._persist_comment_reconciliation(item_id, raw_task, annotations, rebuilt)
 
         unsynced: list[str] = []
         for index, annotation in enumerate(annotations):

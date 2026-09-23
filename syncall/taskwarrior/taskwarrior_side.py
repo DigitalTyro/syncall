@@ -4,6 +4,7 @@ import copy
 import datetime
 import json
 import tempfile
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -247,6 +248,62 @@ class TaskWarriorSide(SyncSide):
             sorted(current_by_text.get(text, ())) == sorted(desired_entries)
             for text, desired_entries in desired_by_text.items()
         )
+
+    @staticmethod
+    def _annotation_entry(annotation: object) -> datetime.datetime | None:
+        """Return the Taskwarrior annotation creation time when one is available."""
+        if isinstance(annotation, dict):
+            entry = annotation.get("entry")
+        else:
+            entry = getattr(annotation, "entry", None)
+            if entry is None:
+                entry = getattr(annotation, "source_entry", None)
+
+        if entry is None:
+            return None
+        return parse_datetime_(entry)
+
+    @classmethod
+    def new_annotations_since(
+        cls,
+        previous_item: Mapping[str, Any],
+        current_item: Mapping[str, Any],
+    ) -> list[str]:
+        """Return only annotations created since the previous successful sync snapshot.
+
+        Annotation entry timestamps are the stable identity here. Text is intentionally not
+        part of the identity: editing an existing annotation must not turn it into a new Asana
+        comment. If an annotation has no creation timestamp, fail closed and do not publish it.
+        """
+        previous_entries = Counter(
+            cls._format_tw_datetime(entry)
+            for annotation in previous_item.get("annotations", ())
+            if (entry := cls._annotation_entry(annotation)) is not None
+        )
+
+        new_annotations: list[str] = []
+        for annotation in current_item.get("annotations", ()):
+            entry = cls._annotation_entry(annotation)
+            if entry is None:
+                logger.warning(
+                    "Skipping outbound Asana comment for Taskwarrior annotation without "
+                    "a stable creation timestamp.",
+                )
+                continue
+
+            entry_key = cls._format_tw_datetime(entry)
+            if previous_entries[entry_key]:
+                previous_entries[entry_key] -= 1
+                continue
+
+            if isinstance(annotation, dict):
+                text = str(annotation.get("description") or "").strip()
+            else:
+                text = str(annotation).strip()
+            if text:
+                new_annotations.append(text)
+
+        return new_annotations
 
     def reconcile_annotation_timestamps(
         self,

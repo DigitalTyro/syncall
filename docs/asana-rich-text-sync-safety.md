@@ -28,7 +28,8 @@ For an existing Asana task:
 - Asana → Taskwarrior converts the rich description into a readable Markdown-style projection stored in Taskwarrior `notes`.
 - Taskwarrior → Asana updates deliberately **do not write `html_notes`**.
 - Asana comments are read into Taskwarrior annotations.
-- Taskwarrior annotations deliberately **do not create, edit or delete comments on an existing Asana task**.
+- Genuinely new Taskwarrior annotations may be appended as new Asana comments through a dedicated append-only pathway.
+- Taskwarrior still cannot edit or delete an existing Asana comment.
 
 The key protection is currently in `AsanaSide.update_item()`:
 
@@ -37,7 +38,7 @@ The key protection is currently in `AsanaSide.update_item()`:
 raw_task.pop("html_notes", None)
 ```
 
-The existing-task update path also no longer calls the historical missing-comment creation logic.
+The existing-task `update_item()` path still does not call the historical missing-comment creation logic. Outbound comments are handled separately from whole-task conflict resolution so a new TW annotation is not lost merely because Asana wins an unrelated task conflict.
 
 These protections are intentional. They must not be removed simply because conversions between Markdown and Asana HTML exist.
 
@@ -79,6 +80,21 @@ Asana HTML
 ```
 
 The final document may look superficially similar while silently losing metadata or structure.
+
+## Current append-only outbound comment behaviour
+
+As of the append-only comment implementation:
+
+- the first successful sync after upgrade establishes a baseline and publishes no historical TW annotations
+- subsequent TW annotations are identified by their Taskwarrior annotation creation timestamp relative to the last successful TW snapshot
+- annotation text is not part of identity, so editing an existing annotation while retaining its timestamp does not create a new Asana comment
+- annotations without a stable creation timestamp fail closed and are not published
+- outbound comments are collected independently of generic whole-task conflict resolution
+- immediately before any write, live Asana comments are re-read and normalised to prevent duplicates
+- successful writes are read back and the actual Asana state is checkpointed
+- retries remain safe because a comment already present remotely is not added again
+
+The two duplicate comments seen during the September 2026 incident should not be treated as proof of one exact cause: the corrected audit did not show corresponding `comment_added` stories in that window. The old pathway nevertheless lacked reliable "new local annotation" identity and operated on the whole desired annotation set. The current design removes that ambiguity rather than relying on an unproven post-mortem.
 
 ## Desired future behaviour
 
@@ -216,7 +232,7 @@ When projected into Taskwarrior, imported annotations can carry source identity/
 
 These identities are important and should be preserved.
 
-### Future outbound behaviour should be append-only
+### Outbound behaviour is append-only
 
 For existing tasks:
 
@@ -228,11 +244,7 @@ For existing tasks:
 
 ### Initial comment migration/baseline
 
-When append-only outbound comments are first introduced, do **not** simply upload every annotation with no `source_id`.
-
-There may already be local Taskwarrior annotations created while outbound comment sync was disabled. Automatically posting all of them could unexpectedly publish historical/private/local-only text into Asana.
-
-The feature needs an initial baseline or explicit migration policy so only annotations created after the outbound feature is enabled are automatically considered new.
+The append-only implementation uses a versioned one-time upgrade baseline. The first successful sync after the feature is installed does not publish historical Taskwarrior annotations. It then records the feature baseline, so only annotations created after that successful baseline are eligible for outbound publication.
 
 For a newly created Taskwarrior → Asana task, the existing post-create pathway remains a separate, valid case.
 
@@ -320,7 +332,7 @@ Prefer a staged implementation:
 3. Add the full regression suite.
 4. Implement safe notes merge/apply logic.
 5. Enable outbound notes only after migration has established baselines.
-6. Add append-only outbound comments separately.
+6. Keep the existing append-only outbound comments separate from notes merging.
 7. Keep an easy fail-closed switch that disables outbound rich-text/comment writes while leaving Asana → Taskwarrior projection working.
 
 Do not combine "remove the current guard" and "invent the new merge algorithm" into one unobservable change.

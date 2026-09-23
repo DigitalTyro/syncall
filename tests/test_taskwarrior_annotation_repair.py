@@ -397,6 +397,7 @@ def test_reconcile_comment_state_recovers_when_syncall_caches_are_gone() -> None
             created_at=datetime.datetime(2024, 1, 5, 9, 15, tzinfo=datetime.UTC),
         ),
     ]
+
     # No asana_comment_state exists and the annotation has the old pre-repair timestamp.
     unsynced = side.reconcile_asana_comment_state("tw-1", raw_task, remote)
 

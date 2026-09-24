@@ -25,7 +25,7 @@ The main personal profile is the saved `work` combination.
 Typical characteristics:
 
 - Taskwarrior sync scope is the `+asana` population.
-- Asana discovery includes tasks assigned to the authenticated user **and** follower-only tasks.
+- Asana discovery includes tasks assigned to the authenticated user **and** follower-only tasks, across both complete and incomplete work.
 - The working dataset is large: roughly 2,700–2,800 mapped tasks, so whole-workspace operations must remain efficient and visibly progressive.
 - The current whole-task conflict strategy is `MostRecentRS`, but field-specific features such as notes/comments must not blindly inherit whole-task recency semantics.
 - Taskwarrior tasks without `+asana` are personal/local and must not be pushed into Asana by the work sync.
@@ -351,7 +351,7 @@ See `docs/asana-rich-text-sync-safety.md` for the detailed merge/migration/test 
 
 ## Taskwarrior reporting and local workflow goals
 
-Taskwarrior is valuable here partly because it enables local analysis that Asana does not provide as cleanly.
+Taskwarrior is valuable here partly because it enables local analysis that Asana does not provide as cleanly. It is a mirror: reporting is only current as of the last successful sync.
 
 Desired/ongoing reporting includes:
 
@@ -362,7 +362,7 @@ Desired/ongoing reporting includes:
 - personal priority/next-up workflows
 - time-estimate planning
 
-Local-only planning fields such as original estimate / remaining estimate should remain local unless an explicit Asana mapping is deliberately designed later.
+Local-only planning fields such as original estimate / remaining estimate (currently conceived as `est` / `rem`) should remain local unless an explicit Asana mapping is deliberately designed later.
 
 Bulk Taskwarrior enrichment may use Taskwarrior JSON export/import workflows. That is separate from the Asana sync contract.
 

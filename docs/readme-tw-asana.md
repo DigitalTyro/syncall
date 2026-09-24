@@ -2,140 +2,173 @@
 
 ## Description
 
-Synchronize Asana tasks.
+Synchronize Asana tasks with Taskwarrior while preserving Asana-only data that Taskwarrior cannot safely represent.
 
-Upon execution, `tw_asana_sync` will synchronize, and on subsequent runs keep
-synchronized, the following attributes:
+This fork uses Asana as the shared operational system and Taskwarrior as the local planning/reporting mirror.
 
-- Asana task `name` <-> TW task `description`
-- An Asana name such as `[Client] Task name` <-> TW `client:Client` plus
-  `description:Task name`
-- Asana task `html_notes` <-> TW `notes`, using Markdown on the Taskwarrior side
-- Asana comments <-> TW annotations
-- Asana task `completed` <-> TW task `status`
-- Asana task `due_at` or `due_on` <-> TW task `due`
-- Asana task is deleted <-> TW task is deleted
+For the full project design and roadmap, see:
 
-The workspace sync includes tasks assigned to the authenticated user as well as
-tasks where that user is a follower. Follower-only discovery uses Asana workspace
-search and manually pages by task creation time so searches larger than 100
-results are not silently truncated.
+- `docs/taskwarrior-asana-project.md`
+- `docs/taskwarrior-asana-operations.md`
+- `docs/asana-rich-text-sync-safety.md`
 
-Rich task descriptions are represented as Markdown in Taskwarrior and converted
-to Asana's supported rich-text HTML when written back. If the Markdown
-representation has not changed, syncall leaves the existing Asana `html_notes`
-untouched so Asana-only metadata such as true @mentions is preserved.
+## Current field behaviour
 
-Comment synchronization is deliberately conservative. Existing Asana comments
-are imported as Taskwarrior annotations and new Taskwarrior annotations are
-appended to Asana as comments. Removing an annotation does not delete the
-corresponding Asana comment.
+| Asana | Taskwarrior | Current behaviour |
+| --- | --- | --- |
+| task GID | `asana_gid` | durable identity |
+| `[Client] Task name` | `client:Client` + clean `description` | two-way |
+| task `name` | `description` | two-way |
+| `completed` | `status` | two-way |
+| `created_at` | `entry` | historical source date preserved |
+| `completed_at` | `end` | historical source date preserved |
+| `modified_at` | `modified` | generic change/conflict metadata |
+| `due_at` / `due_on` | `due` | two-way with local-calendar protection |
+| `html_notes` | `notes` | Asana → TW projection for existing tasks |
+| comments | annotations | Asana → TW + append-only genuinely new TW annotations → Asana |
 
-Current limitations:
+The workspace sync includes tasks assigned to the authenticated user as well as follower-only tasks. Follower discovery uses Asana workspace search and manual pagination so result sets larger than 100 tasks are not silently truncated.
 
-- Does not sync Asana tags, project names, subtasks, projects, likes, etc.
-- Does not sync Taskwarrior tags or projects.
-- Only supports authentication with an Asana [Personal Access Token](https://developers.asana.com/docs/personal-access-token).
-- Follower-only task discovery requires access to Asana's premium workspace task
-  search API.
-- Editing an existing Taskwarrior annotation creates a new Asana comment rather
-  than editing or deleting an existing Asana comment.
+## Rich descriptions: important safety rule
 
-## Setup and Usage
+Taskwarrior does **not** contain a lossless serialization of Asana rich text.
 
-You can synchronize a series of Taskwarrior tasks that have a particular
-(or multiple) tags, synchronize all tasks that belong to a particular project,
-or use `--sync-all-tw-tasks`.
+An Asana description can contain embedded images, mentions, rich links, formatting and Asana-specific metadata that a Taskwarrior Markdown/string field cannot faithfully preserve.
 
-Use `--taskwarrior-tags ...` or `--taskwarrior-project` respectively for the
-first two approaches.
+Therefore, for an **existing Asana task**:
 
-### Configure Taskwarrior fields
+- Asana `html_notes` is canonical.
+- syncall projects it into readable Taskwarrior `notes`.
+- normal Taskwarrior → Asana updates deliberately do **not** replace the existing Asana `html_notes`.
 
-syncall supplies the `client` and `notes` UDA definitions while it is running.
-To view and edit those fields directly with the normal `task` command, add them
-to your persistent Taskwarrior configuration once:
+This is intentional protection against silent data loss.
+
+New Taskwarrior → Asana task creation may still use Taskwarrior notes as the initial Asana description because no pre-existing Asana rich document exists.
+
+Future two-way notes support must use field-specific baseline/merge logic rather than replacing the whole rich document. See `docs/asana-rich-text-sync-safety.md`.
+
+## Comments and annotations
+
+Existing Asana comments are projected into Taskwarrior annotations.
+
+For existing mapped tasks:
+
+- a genuinely new Taskwarrior annotation may append one new Asana comment
+- editing an imported Taskwarrior annotation does not edit/recreate the Asana comment
+- deleting an imported annotation does not delete the Asana comment
+- duplicate prevention uses durable comment identity plus live Asana checks
+
+Taskwarrior stores durable per-task comment reconciliation state in the internal `asana_comment_state` UDA.
+
+This state is designed to self-heal from live Asana history if local caches/preferences are missing or stale.
+
+## Identity and deletion safety
+
+Mapped Taskwarrior tasks carry the Asana task GID in the internal `asana_gid` UDA.
+
+A task disappearing from filtered discovery is not automatically treated as deleted. syncall verifies mapped missing tasks directly before propagating deletion.
+
+This prevents assignment/follower/scope changes from becoming accidental remote deletions.
+
+## Date/time behaviour
+
+Taskwarrior may serialize timestamps in UTC, but user-facing work remains local-time based.
+
+A date-only Asana `due_on` is a calendar day, not a UTC instant. syncall converts timezone-aware Taskwarrior values back to local time before deriving an Asana date so UK/BST dates do not shift backwards by one day.
+
+## Current limitations
+
+- Existing Asana rich descriptions cannot yet be safely edited from Taskwarrior.
+- Existing Asana comments cannot be edited/deleted from Taskwarrior.
+- Does not sync Asana tags, projects, likes, subtasks or arbitrary custom fields.
+- Does not sync Taskwarrior tags/projects as remote fields.
+- Follower-only discovery requires access to Asana workspace task search.
+- The generic whole-task conflict strategy remains separate from future field-specific rich-text conflict handling.
+
+## Setup and usage
+
+You can synchronize Taskwarrior tasks selected by tags/project/filtering or use `--sync-all-tw-tasks`.
+
+The current personal work profile uses the `+asana` Taskwarrior population and a saved combination named `work`.
+
+### Normal work sync in this fork
 
 ```sh
-task config uda.client.type string
-task config uda.client.label Client
-task config uda.notes.type string
-task config uda.notes.label Notes
+./scripts/sync-work
 ```
 
-For example, a short multiline Markdown note can then be entered directly in the
-terminal:
+The wrapper loads `.env` and invokes the saved `work` combination.
 
-```sh
-task 12 modify notes:"Check:
-- UK
-- US
-- **Revenue**"
-```
+### Authentication
 
-A Taskwarrior annotation becomes an Asana comment on the next sync:
+Generate an Asana [Personal Access Token](https://developers.asana.com/docs/personal-access-token).
 
-```sh
-task 12 annotate "Please review the final numbers"
-```
+Make it available either through:
 
-### Authenticate
+- `ASANA_PERSONAL_ACCESS_TOKEN`
+- password-store via `--token-pass-path`
 
-First, generate a [personal access token](https://developers.asana.com/docs/personal-access-token) on Asana.
+The local wrapper expects the PAT to be available through `.env`.
 
-| ![1](../misc/asana/authentication/1.png) | ![2](../misc/asana/authentication/2.png) | ![3](../misc/asana/authentication/3.png) |
-| :--------------------------------------: | :--------------------------------------: | :--------------------------------------: |
-
-Next, make this token available to `tw_asana_sync`. This can be done by either:
-
-- Storing the token in environment variable `ASANA_PERSONAL_ACCESS_TOKEN`.
-- Storing the token with [password store](https://wiki.archlinux.org/title/Pass),
-  and telling Asana to load the token with `--token-pass-path`.
-
-### Find IDs of available workspace
+### Find available workspaces
 
 ```sh
 tw_asana_sync --list-asana-workspaces
 ```
 
-Example output:
-
-```text
-Asana workspaces:
-====================
-
-- My Workspace: gid=123456789012345
-```
-
-### Synchronize workspace tasks
-
-To synchronize Asana tasks within a workspace:
+### Generic workspace sync
 
 ```sh
-tw_asana_sync --taskwarrior-tags asana --asana-workspace-gid 123456789012345 --token-pass-path <path-to-asana-token-in-password-store>
+tw_asana_sync \
+  --taskwarrior-tags asana \
+  --asana-workspace-gid 123456789012345
 ```
 
-Or:
+Or by workspace name:
 
 ```sh
-tw_asana_sync --taskwarrior-tags asana --asana-workspace-name my-workspace --token-pass-path <path-to-asana-token-in-password-store>
+tw_asana_sync \
+  --taskwarrior-tags asana \
+  --asana-workspace-name my-workspace
 ```
 
-### Pass the Access Token via environment variable
+## Taskwarrior UDAs
 
-If you haven't installed or don't want to install [password
-store](https://wiki.archlinux.org/title/Pass), you can pass the access token via an
-environment variable:
+syncall injects the UDA definitions it needs while it is running, including internal identity/recovery fields.
+
+You do **not** need to manually configure internal fields such as:
+
+- `asana_gid`
+- `asana_pending_comments`
+- `asana_comment_state`
+
+If you want to view/edit user-facing fields such as `client` or `notes` with normal Taskwarrior commands outside syncall's runtime overrides, persistent Taskwarrior UDA configuration may still be convenient.
+
+## Read-only incident audit
+
+This fork includes:
 
 ```sh
-ASANA_PERSONAL_ACCESS_TOKEN=123456789012345 tw_asana_sync -t asana -W my-workspace
+./scripts/audit-asana-window --help
 ```
+
+It reconstructs task/story activity for a timezone-aware ISO-8601 window without modifying Asana.
+
+See `docs/taskwarrior-asana-operations.md` for examples, including UK local-time windows.
+
+## Verification
+
+Before using behavioural changes locally:
+
+```sh
+./scripts/update-verify
+```
+
+This runs dependency checks, the full test suite, Ruff lint and Ruff format checks.
 
 ## Installation
 
-### Package Installation
-
-Install the `syncall` package enabling the `asana` and `tw` extras:
+Install with the Asana and Taskwarrior extras:
 
 ```sh
 pip3 install syncall[asana,tw]
@@ -143,4 +176,7 @@ pip3 install syncall[asana,tw]
 
 ## See also
 
-- <a href="https://github.com/bergercookie/syncall/blob/master/docs/taskwarrior-filtering.md">Taskwarrior Filtering.md</a>.
+- `docs/taskwarrior-asana-project.md`
+- `docs/taskwarrior-asana-operations.md`
+- `docs/asana-rich-text-sync-safety.md`
+- `docs/taskwarrior-filtering.md`

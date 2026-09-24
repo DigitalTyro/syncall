@@ -9,6 +9,7 @@ from bubop import logger
 from rich.console import Console
 
 from syncall.asana.asana_task import AsanaComment, AsanaTask
+from syncall.change_log import TO_ASANA, TextChange
 from syncall.progress import make_progress
 from syncall.sync_side import SyncSide
 from syncall.types import AsanaGID
@@ -46,6 +47,7 @@ class AsanaSide(SyncSide):
         self._comment_cache_path = comment_cache_path
         self._comment_cache = self._load_comment_cache()
         self._comment_cache_dirty = False
+        self.change_log = None
 
         super().__init__(name="Asana", fullname="Asana")
 
@@ -273,8 +275,36 @@ class AsanaSide(SyncSide):
             if comment_key in existing:
                 continue
 
-            self._client.tasks.add_comment(item_id, text=comment_text)
+            try:
+                self._client.tasks.add_comment(item_id, text=comment_text)
+            except Exception as exc:
+                self._log_comment_add(item_id, comment_text, error=exc)
+                raise
             existing.add(comment_key)
+            self._log_comment_add(item_id, comment_text)
+
+    def _log_comment_add(
+        self,
+        item_id: AsanaGID,
+        comment_text: str,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        """Record an Asana comment append. The log is not consulted for later writes."""
+        change_log = getattr(self, "change_log", None)
+        if change_log is None:
+            return
+        change_log.record(
+            direction=TO_ASANA,
+            operation="comment added",
+            result="failed" if error is not None else "succeeded",
+            asana_gid=str(item_id),
+            texts=(
+                () if error is not None else (TextChange("comment added", after=comment_text),)
+            ),
+            note=None if error is None else f"Attempted comment: {comment_text}",
+            error=(None if error is None else f"{type(error).__name__}: {error}"),
+        )
 
     def get_item(
         self,

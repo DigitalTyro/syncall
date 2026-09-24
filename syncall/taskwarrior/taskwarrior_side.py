@@ -17,6 +17,12 @@ from taskw_ng.exceptions import TaskwarriorError
 from taskw_ng.warrior import TASKRC
 from xdg import xdg_config_home
 
+from syncall.change_log import (
+    TO_TASKWARRIOR,
+    SyncChangeLog,
+    diff_stored_items,
+    task_name_from_item,
+)
 from syncall.sync_side import ItemType, SyncSide
 
 if TYPE_CHECKING:
@@ -107,6 +113,7 @@ class TaskWarriorSide(SyncSide):
                                  TW_CONFIG_DEFAULT_OVERRIDES
         """
         super().__init__(name="Tw", fullname="Taskwarrior", **kargs)
+        self.change_log: SyncChangeLog | None = None
         self._tags: set[str] = set(tags)
         self._project: str = project or ""
         self._tw_filter: str = tw_filter
@@ -356,28 +363,117 @@ class TaskWarriorSide(SyncSide):
     ) -> bool:
         serialized = self._serialize_comment_state(bindings)
         annotations_list = list(annotations)
-        if (
-            raw_task.get(tw_asana_comment_state_key) == serialized
-            and list(raw_task.get("annotations", ())) == annotations_list
-        ):
+        old_annotations = list(raw_task.get("annotations", ()))
+        old_state = raw_task.get(tw_asana_comment_state_key)
+        if old_state == serialized and old_annotations == annotations_list:
             return False
 
         raw_task["annotations"] = annotations_list
         raw_task[tw_asana_comment_state_key] = serialized
         raw_task.pop("id", None)
         raw_task.pop("urgency", None)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as handle:
-            json.dump(raw_task, handle, ensure_ascii=False)
-            handle.write("\n")
-            handle.flush()
-            self._tw._execute("import", handle.name)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", encoding="utf-8"
+            ) as handle:
+                json.dump(raw_task, handle, ensure_ascii=False)
+                handle.write("\n")
+                handle.flush()
+                self._tw._execute("import", handle.name)
+        except Exception as exc:
+            self._log_annotation_reconciliation(
+                item_id,
+                raw_task,
+                old_annotations,
+                old_state,
+                annotations_list,
+                serialized,
+                error=exc,
+            )
+            raise
 
         cached = self._items_cache.get(str(item_id))
         if cached is not None:
             cached["annotations"] = annotations_list  # type: ignore[literal-required]
             cached[tw_asana_comment_state_key] = serialized  # type: ignore[literal-required]
         self._reload_items = True
+        self._log_annotation_reconciliation(
+            item_id,
+            raw_task,
+            old_annotations,
+            old_state,
+            annotations_list,
+            serialized,
+        )
         return True
+
+    def _log_annotation_reconciliation(
+        self,
+        item_id: str,
+        raw_task: dict[str, Any],
+        old_annotations: Sequence[object],
+        old_state: object,
+        new_annotations: Sequence[object],
+        new_state: str,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        """Record annotation or comment-identity edits made on the Taskwarrior task."""
+        change_log = getattr(self, "change_log", None)
+        if change_log is None:
+            return
+
+        before = {
+            "description": raw_task.get("description"),
+            "client": raw_task.get("client"),
+            "annotations": old_annotations,
+            "asana_comment_state": old_state,
+        }
+        after = {
+            "description": raw_task.get("description"),
+            "client": raw_task.get("client"),
+            "annotations": new_annotations,
+            "asana_comment_state": new_state,
+        }
+        fields, texts = diff_stored_items(before, after, asana=False)
+        annotation_changes = tuple(texts)
+        state_changes = tuple(field for field in fields if field.name == "asana_comment_state")
+        if error is not None:
+            operation = "updated"
+            note = "Taskwarrior annotation reconciliation failed. Asana was not changed by this step."
+            logged_fields = ()
+            logged_texts = ()
+        elif annotation_changes:
+            operation = "updated"
+            note = (
+                "Asana comment projections on this Taskwarrior task changed. "
+                "Existing Asana comments were not edited."
+            )
+            logged_fields = state_changes
+            logged_texts = annotation_changes
+        elif state_changes:
+            operation = "comment identity repaired"
+            note = (
+                "Rebound comment identities on this Taskwarrior task. "
+                "Annotation text was not changed. Asana was not changed."
+            )
+            logged_fields = state_changes
+            logged_texts = ()
+        else:
+            return
+
+        change_log.record(
+            direction=TO_TASKWARRIOR,
+            operation=operation,
+            result="failed" if error is not None else "succeeded",
+            tw_uuid=str(item_id),
+            asana_gid=str(raw_task.get(tw_asana_gid_key) or "") or None,
+            task_name=task_name_from_item(raw_task),
+            fields=logged_fields,
+            texts=logged_texts,
+            note=note,
+            error=None if error is None else f"{type(error).__name__}: {error}",
+        )
 
     @classmethod
     def _find_annotation_by_entry(
@@ -879,9 +975,16 @@ class TaskWarriorSide(SyncSide):
                 f"{tw_asana_gid_key}:{asana_gid}",
                 f"{tw_asana_pending_comments_key}:1",
             )
-        except (OSError, TaskwarriorError):
+        except (OSError, TaskwarriorError) as exc:
             logger.opt(exception=True).warning(
                 f"Could not persist Asana identity on Taskwarrior task {item_id}.",
+            )
+            self._log_identity(
+                item_id,
+                asana_gid,
+                operation="identity stored",
+                error=exc,
+                note="Could not store the new Asana task id on the Taskwarrior task.",
             )
             return False
 
@@ -890,19 +993,49 @@ class TaskWarriorSide(SyncSide):
             cached[tw_asana_gid_key] = str(asana_gid)  # type: ignore[literal-required]
             cached[tw_asana_pending_comments_key] = "1"  # type: ignore[literal-required]
         self._reload_items = True
+        self._log_identity(
+            item_id,
+            asana_gid,
+            operation="identity stored",
+            note=(
+                "Stored the new Asana task id on the Taskwarrior task after creating it. "
+                "This step did not change Asana task content."
+            ),
+        )
         return True
 
     def clear_pending_asana_comments(self, item_id: str) -> None:
         """Clear the recovery marker after all outbound comments are confirmed remote."""
-        self._tw._execute(
-            str(item_id),
-            "modify",
-            f"{tw_asana_pending_comments_key}:",
-        )
+        try:
+            self._tw._execute(
+                str(item_id),
+                "modify",
+                f"{tw_asana_pending_comments_key}:",
+            )
+        except Exception as exc:
+            self._log_identity(
+                item_id,
+                None,
+                operation="recovery marker cleared",
+                error=exc,
+                note="Could not clear the Taskwarrior crash-recovery marker.",
+            )
+            raise
         cached = self._items_cache.get(str(item_id))
         if cached is not None:
             cached.pop(tw_asana_pending_comments_key, None)
         self._reload_items = True
+        self._log_identity(
+            item_id,
+            str(cached.get(tw_asana_gid_key))
+            if cached and cached.get(tw_asana_gid_key)
+            else None,
+            operation="recovery marker cleared",
+            note=(
+                "Cleared the crash-recovery marker after outbound comments were confirmed. "
+                "This step did not change Asana task content."
+            ),
+        )
 
     def backfill_asana_gids(self, mapping: Mapping[str, str]) -> int:
         """Persist Asana task identity inside Taskwarrior so mappings are recoverable."""
@@ -917,27 +1050,75 @@ class TaskWarriorSide(SyncSide):
         for raw_task in raw_tasks:
             task_uuid = str(raw_task.get("uuid") or "")
             asana_gid = mapping.get(task_uuid)
-            if asana_gid is None or str(raw_task.get(tw_asana_gid_key) or "") == str(
-                asana_gid
-            ):
+            previous_gid = str(raw_task.get(tw_asana_gid_key) or "")
+            if asana_gid is None or previous_gid == str(asana_gid):
                 continue
             raw_task[tw_asana_gid_key] = str(asana_gid)
             raw_task.pop("id", None)
             raw_task.pop("urgency", None)
-            changed.append(raw_task)
+            changed.append((previous_gid, raw_task))
 
         if not changed:
             return 0
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as handle:
-            for raw_task in changed:
-                json.dump(raw_task, handle, ensure_ascii=False)
-                handle.write("\n")
-            handle.flush()
-            self._tw._execute("import", handle.name)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", encoding="utf-8"
+            ) as handle:
+                for _previous_gid, raw_task in changed:
+                    json.dump(raw_task, handle, ensure_ascii=False)
+                    handle.write("\n")
+                handle.flush()
+                self._tw._execute("import", handle.name)
+        except Exception as exc:
+            self._log_identity(
+                "",
+                None,
+                operation="identity stored",
+                error=exc,
+                note="Could not backfill Asana task ids onto Taskwarrior tasks.",
+            )
+            raise
 
         self._reload_items = True
+        for previous_gid, raw_task in changed:
+            self._log_identity(
+                str(raw_task.get("uuid") or ""),
+                str(raw_task.get(tw_asana_gid_key) or ""),
+                operation="identity stored",
+                task_name=task_name_from_item(raw_task),
+                note=(
+                    f"Asana task id stored on this Taskwarrior task "
+                    f"(previous value: {previous_gid or '(empty)'}). "
+                    "Asana task content was not changed."
+                ),
+            )
         return len(changed)
+
+    def _log_identity(
+        self,
+        item_id: str,
+        asana_gid: str | None,
+        *,
+        operation: str,
+        note: str,
+        error: Exception | None = None,
+        task_name: str | None = None,
+    ) -> None:
+        """Record a Taskwarrior identity or recovery-marker write."""
+        change_log = getattr(self, "change_log", None)
+        if change_log is None:
+            return
+        change_log.record(
+            direction=TO_TASKWARRIOR,
+            operation=operation,
+            result="failed" if error is not None else "succeeded",
+            tw_uuid=item_id or None,
+            asana_gid=asana_gid,
+            task_name=task_name,
+            note=note,
+            error=None if error is None else f"{type(error).__name__}: {error}",
+        )
 
     def delete_single_item(self, item_id) -> None:
         self._tw.task_delete(uuid=item_id)

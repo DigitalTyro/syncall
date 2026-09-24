@@ -19,6 +19,16 @@ def fs_file_path(request):
 # tests ---------------------------------------------------------------------------------------
 
 
+def _syncall_attr_names(path: Path) -> list[str]:
+    """Return syncall extended attributes, ignoring OS-owned names such as com.apple.provenance."""
+    names = []
+    for raw_name in xattr.xattr(path).list():
+        name = raw_name.decode() if isinstance(raw_name, bytes) else raw_name
+        if name == FilesystemFile._attr:
+            names.append(name)
+    return names
+
+
 @pytest.mark.parametrize(
     (
         "fs_file_path",
@@ -37,19 +47,17 @@ def test_fs_file_flush_attrs(fs_file_path: Path, flush_on_instantiation: bool):
     p = fs_file_path
     fs_file = FilesystemFile(path=p, flush_on_instantiation=flush_on_instantiation)
 
-    x = xattr.xattr(p)
-
     assert fs_file.id is not None
     if flush_on_instantiation:
-        assert x.list()
+        assert _syncall_attr_names(p) == [FilesystemFile._attr]
     else:
-        assert not x.list()
+        assert _syncall_attr_names(p) == []
 
     # flush -----------------------------------------------------------------------------------
     fs_file.flush()
 
-    assert len(x.list()) == 1
-    assert x.get(FilesystemFile._attr) is not None
+    assert _syncall_attr_names(p) == [FilesystemFile._attr]
+    assert xattr.xattr(p).get(FilesystemFile._attr) is not None
 
 
 def test_fs_file_flush_change_title_content(python_path_with_content: Path):

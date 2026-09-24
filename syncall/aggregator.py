@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
     from syncall.sync_side import SyncSide
 
+from contextlib import nullcontext
 from functools import partial
 from typing import Any
 
@@ -22,6 +23,14 @@ from rich.console import Console
 from yaml import YAMLError
 
 from syncall.app_utils import app_name
+from syncall.change_log import (
+    TO_ASANA,
+    TO_TASKWARRIOR,
+    SyncChangeLog,
+    created_item_changes,
+    diff_stored_items,
+    task_name_from_item,
+)
 from syncall.progress import make_progress
 from syncall.side_helper import SideHelper
 
@@ -44,6 +53,7 @@ class Aggregator:
         config_fname: str | None = None,
         ignore_keys: tuple[Sequence[str], Sequence[str]] = (),
         catch_exceptions: bool = True,
+        change_log: SyncChangeLog | None = None,
     ):
         # Preferences manager
         # Sample config path: ~/.config/syncall/taskwarrior_gcal_sync.yaml
@@ -130,6 +140,7 @@ class Aggregator:
             side_names=(side_A.fullname, side_B.fullname),
         )
 
+        self.change_log = change_log
         self._items_A: dict[ID, Item] = {}
         self._items_B: dict[ID, Item] = {}
         self._operation_progress = None
@@ -345,7 +356,42 @@ class Aggregator:
 
         live_comments = get_comments_live(asana_id)
         self._store_live_comments(asana_id, asana_item, live_comments)
+        task_name = task_name_from_item(asana_item) or task_name_from_item(current_tw)
+        change_log = getattr(self, "change_log", None)
+        comment_context = (
+            change_log.task_context(
+                tw_uuid=tw_id,
+                asana_gid=asana_id,
+                task_name=task_name,
+            )
+            if change_log is not None
+            else nullcontext()
+        )
 
+        with comment_context:
+            self._reconcile_one_comment_history(
+                tw_id,
+                asana_id,
+                asana_item,
+                current_tw,
+                live_comments,
+                get_comments_live=get_comments_live,
+                ensure_comments=ensure_comments,
+                reconcile=reconcile,
+            )
+
+    def _reconcile_one_comment_history(
+        self,
+        tw_id: str,
+        asana_id: str,
+        asana_item: Item,
+        current_tw: Item,
+        live_comments,
+        *,
+        get_comments_live,
+        ensure_comments,
+        reconcile,
+    ) -> None:
         outbound = reconcile(tw_id, current_tw, live_comments)
         if not outbound:
             return
@@ -519,23 +565,58 @@ class Aggregator:
             f" {helper}...",
         )
 
+        created_id: str | None = None
         try:
             item_created = item_side.add_item(item)
             item_created_id = str(item_created[helper.id_key])
-            source_tw_uuid = self._checkpoint_source_identity(
-                item,
-                helper,
-                item_created_id,
+            created_id = item_created_id
+            self._log_stored_change(
+                helper=helper,
+                item_id=item_created_id,
+                operation="created",
+                result="succeeded",
+                before=None,
+                after=item_created,
+                requested=item,
             )
-            self._run_post_create_sync(item_side, item_created_id, item)
-            self._clear_pending_comments(source_tw_uuid, helper)
+            with self._logged_task_context(helper, item_created_id, item_created, item):
+                source_tw_uuid = self._checkpoint_source_identity(
+                    item,
+                    helper,
+                    item_created_id,
+                )
+                self._run_post_create_sync(item_side, item_created_id, item)
+                self._clear_pending_comments(source_tw_uuid, helper)
 
             logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
             pickle_dump(item_created, serdes_dir / item_created_id)
             self._written_serdes.add((helper.name, item_created_id))
             self._advance_operation_progress()
-        except Exception:
+        except Exception as exc:
             self._operation_failed = True
+            if created_id is None:
+                self._log_stored_change(
+                    helper=helper,
+                    item_id="",
+                    operation="created",
+                    result="failed",
+                    before=None,
+                    after=None,
+                    requested=item,
+                    error=exc,
+                )
+            else:
+                self._log_stored_change(
+                    helper=helper,
+                    item_id=created_id,
+                    operation="follow-up",
+                    result="failed",
+                    before=None,
+                    after=None,
+                    requested=item,
+                    error=exc,
+                    note="The task was created, then a later step failed.",
+                )
             raise
 
         return item_created_id
@@ -563,18 +644,29 @@ class Aggregator:
             f" {helper}...",
         )
 
+        before = self._snapshot_for_log(side, item_id)
         try:
             side.update_item(item_id, **item)
             current_target = self._read_back_updated_item(side, item_id, helper)
             pickle_dump(current_target, serdes_dir / item_id)
             self._written_serdes.add((helper.name, item_id))
+            self._log_stored_change(
+                helper=helper,
+                item_id=item_id,
+                operation="updated",
+                result="succeeded",
+                before=before,
+                after=current_target,
+                requested=item,
+            )
             self._advance_operation_progress()
-        except Exception:
+        except Exception as exc:
             self._operation_failed = True
+            observed = None
             try:
-                current_target = side.get_item(item_id, use_cached=False)
-                if current_target is not None:
-                    pickle_dump(current_target, serdes_dir / item_id)
+                observed = side.get_item(item_id, use_cached=False)
+                if observed is not None:
+                    pickle_dump(observed, serdes_dir / item_id)
                     self._written_serdes.add((helper.name, item_id))
             except Exception:  # noqa: BLE001
                 # This checkpoint is best-effort after an existing sync failure; never let a
@@ -582,19 +674,157 @@ class Aggregator:
                 logger.opt(exception=True).warning(
                     f"[{helper}] Could not checkpoint target state after a failed update.",
                 )
+            self._log_stored_change(
+                helper=helper,
+                item_id=item_id,
+                operation="updated",
+                result="failed",
+                before=before,
+                after=observed,
+                requested=item,
+                error=exc,
+                note="Stored state below is whatever could be read back after the error.",
+            )
             raise
 
     def deleter_to(self, item_id: ID, helper: SideHelper):
         """Delete an item using the given side helper."""
         logger.debug(f"[{helper}] Synchronising deleted item, id -> {item_id}...")
         side, _ = self._get_side_instances(helper)
+        before = self._snapshot_for_log(side, item_id)
         try:
             side.delete_single_item(item_id)
             self._remove_serdes_files(helper=helper, ids=(item_id,))
+            self._log_stored_change(
+                helper=helper,
+                item_id=item_id,
+                operation="deleted",
+                result="succeeded",
+                before=before,
+                after=None,
+                requested=None,
+            )
             self._advance_operation_progress()
-        except Exception:
+        except Exception as exc:
             self._operation_failed = True
+            self._log_stored_change(
+                helper=helper,
+                item_id=item_id,
+                operation="deleted",
+                result="failed",
+                before=before,
+                after=None,
+                requested=None,
+                error=exc,
+            )
             raise
+
+    def _snapshot_for_log(self, side: SyncSide, item_id: ID) -> Item | None:
+        """Read the stored item before a write so the log can show a real diff."""
+        if getattr(self, "change_log", None) is None:
+            return None
+        try:
+            return side.get_item(item_id, use_cached=False)
+        except Exception:  # noqa: BLE001
+            logger.opt(exception=True).warning(
+                f"Could not read item {item_id} before logging a sync write.",
+            )
+            return None
+
+    def _logged_task_context(self, helper: SideHelper, item_id: ID, *items: Item | None):
+        change_log = getattr(self, "change_log", None)
+        if change_log is None:
+            return nullcontext()
+        tw_uuid, asana_gid = self._log_identities(helper, item_id, *items)
+        task_name = ""
+        for item in items:
+            task_name = task_name_from_item(item)
+            if task_name:
+                break
+        return change_log.task_context(
+            tw_uuid=tw_uuid,
+            asana_gid=asana_gid,
+            task_name=task_name,
+        )
+
+    def _log_identities(
+        self,
+        helper: SideHelper,
+        item_id: ID,
+        *items: Item | None,
+    ) -> tuple[str | None, str | None]:
+        counterpart = None
+        try:
+            counterpart = self._get_ids_map(helper).get(item_id)
+        except (AttributeError, KeyError, TypeError):
+            counterpart = None
+        if helper.name == "Asana":
+            asana_gid = str(item_id) if item_id else None
+            tw_uuid = str(counterpart) if counterpart is not None else None
+        else:
+            tw_uuid = str(item_id) if item_id else None
+            asana_gid = str(counterpart) if counterpart is not None else None
+        for item in items:
+            if tw_uuid is None:
+                source_uuid = getattr(item, "source_tw_uuid", None)
+                if source_uuid is None and isinstance(item, dict):
+                    source_uuid = item.get("uuid") or item.get("source_tw_uuid")
+                if source_uuid is not None:
+                    tw_uuid = str(source_uuid)
+            if asana_gid is None and isinstance(item, dict) and item.get("asana_gid"):
+                asana_gid = str(item["asana_gid"])
+            if asana_gid is None and helper.name == "Asana":
+                gid = getattr(item, "gid", None)
+                if gid:
+                    asana_gid = str(gid)
+        return tw_uuid, asana_gid
+
+    def _log_stored_change(
+        self,
+        *,
+        helper: SideHelper,
+        item_id: ID,
+        operation: str,
+        result: str,
+        before: Item | None,
+        after: Item | None,
+        requested: Item | None,
+        error: Exception | None = None,
+        note: str | None = None,
+    ) -> None:
+        """Record a create, update, or delete from the stored before/after items."""
+        change_log = getattr(self, "change_log", None)
+        if change_log is None:
+            return
+
+        asana = helper.name == "Asana"
+        if operation == "created" and result == "succeeded":
+            fields, texts = created_item_changes(after, asana=asana)
+        elif operation == "deleted" and result == "succeeded":
+            fields, texts = diff_stored_items(before, {}, asana=asana)
+        elif result == "failed":
+            fields, texts = diff_stored_items(before, after, asana=asana)
+        else:
+            fields, texts = diff_stored_items(before, after, asana=asana)
+
+        tw_uuid, asana_gid = self._log_identities(helper, item_id, after, before, requested)
+        task_name = (
+            task_name_from_item(after)
+            or task_name_from_item(before)
+            or task_name_from_item(requested)
+        )
+        change_log.record(
+            direction=TO_ASANA if asana else TO_TASKWARRIOR,
+            operation=operation,
+            result=result,
+            tw_uuid=tw_uuid,
+            asana_gid=asana_gid,
+            task_name=task_name,
+            fields=fields,
+            texts=texts,
+            note=note,
+            error=f"{type(error).__name__}: {error}" if error is not None else None,
+        )
 
     def item_getter_for(self, item_id: ID, helper: SideHelper) -> Item:
         """Return an item from the current sync snapshot, falling back to the live side."""

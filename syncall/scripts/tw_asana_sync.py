@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import sys
+from contextlib import nullcontext
 
 import asana
 import click
@@ -35,6 +36,7 @@ from syncall.app_utils import (
     get_resolution_strategy,
     register_teardown_handler,
 )
+from syncall.change_log import SyncChangeLog, task_name_from_item
 from syncall.cli import opts_asana, opts_miscellaneous, opts_tw_filtering
 from syncall.progress import make_progress
 from syncall.tw_asana_utils import convert_asana_to_tw, convert_tw_to_asana
@@ -74,12 +76,23 @@ def resume_pending_asana_comments(
             total=len(pending_items),
         )
         for item in pending_items:
-            desired_asana = convert_tw_to_asana(item)
-            asana_side.ensure_comments(
-                str(item["asana_gid"]),
-                desired_asana.comments,
+            change_log = getattr(asana_side, "change_log", None)
+            context = (
+                change_log.task_context(
+                    tw_uuid=str(item.get("uuid") or "") or None,
+                    asana_gid=str(item.get("asana_gid") or "") or None,
+                    task_name=task_name_from_item(item),
+                )
+                if change_log is not None
+                else nullcontext()
             )
-            tw_side.clear_pending_asana_comments(str(item["uuid"]))
+            with context:
+                desired_asana = convert_tw_to_asana(item)
+                asana_side.ensure_comments(
+                    str(item["asana_gid"]),
+                    desired_asana.comments,
+                )
+                tw_side.clear_pending_asana_comments(str(item["uuid"]))
             progress.advance(task_id)
 
     return len(pending_items)
@@ -276,105 +289,118 @@ def main(  # noqa: PLR0915, C901, PLR0912
     )
 
     # sync ------------------------------------------------------------------------------------
-    with Aggregator(
-        side_A=asana_side,
-        side_B=tw_side,
-        converter_A_to_B=convert_asana_to_tw,
-        converter_B_to_A=convert_tw_to_asana,
-        resolution_strategy=get_resolution_strategy(
-            resolution_strategy,
-            side_A_type=type(asana_side),
-            side_B_type=type(tw_side),
-        ),
-        config_fname=combination_name,
-        ignore_keys=(
-            (
-                "comments",
-                "completed_at",
-                "created_at",
-                "modified_at",
+    change_log = SyncChangeLog()
+    asana_side.change_log = change_log
+    tw_side.change_log = change_log
+    console = Console()
+    console.print("[bold]Change logs for this run[/bold]")
+    console.print(f"  Taskwarrior to Asana: {change_log.path_for('taskwarrior-to-asana')}")
+    console.print(f"  Asana to Taskwarrior: {change_log.path_for('asana-to-taskwarrior')}")
+    try:
+        with Aggregator(
+            side_A=asana_side,
+            side_B=tw_side,
+            converter_A_to_B=convert_asana_to_tw,
+            converter_B_to_A=convert_tw_to_asana,
+            resolution_strategy=get_resolution_strategy(
+                resolution_strategy,
+                side_A_type=type(asana_side),
+                side_B_type=type(tw_side),
             ),
-            ("annotations", "end", "entry", "modified", "urgency"),
-        ),
-    ) as aggregator:
-        console = Console()
-        with console.status("[bold]Loading Taskwarrior snapshot...[/bold]", spinner="dots"):
-            existing_tw_items = tw_side.get_all_items()
-        console.print(
-            f"[bold]Found {len(existing_tw_items):,} Taskwarrior tasks in sync scope[/bold]"
-        )
-
-        # Resume any interrupted TW→Asana task creation before normal change detection.
-        # The marker lives on the Taskwarrior task itself, so this does not depend on
-        # syncall's cache or preference files.
-        resumed_pending = resume_pending_asana_comments(
-            tw_side,
-            asana_side,
-            existing_tw_items,
-            console=console,
-        )
-        if resumed_pending:
-            logger.info(
-                f"Resumed comment synchronization for {resumed_pending} interrupted "
-                "Taskwarrior→Asana task(s).",
-            )
-
-        if resumed_pending:
+            config_fname=combination_name,
+            ignore_keys=(
+                (
+                    "comments",
+                    "completed_at",
+                    "created_at",
+                    "modified_at",
+                ),
+                ("annotations", "end", "entry", "modified", "urgency"),
+            ),
+            change_log=change_log,
+        ) as aggregator:
             with console.status(
-                "[bold]Refreshing Taskwarrior snapshot after recovery...[/bold]",
+                "[bold]Loading Taskwarrior snapshot...[/bold]",
                 spinner="dots",
             ):
                 existing_tw_items = tw_side.get_all_items()
-
-        recovered = {
-            str(item["uuid"]): str(item["asana_gid"])
-            for item in existing_tw_items
-            if item.get("asana_gid")
-        }
-        recovered_count = aggregator.recover_correspondences(recovered)
-        if recovered_count:
-            logger.info(
-                f"Recovered {recovered_count} Asana↔Taskwarrior task mapping(s) "
-                "from Taskwarrior.",
+            console.print(
+                f"[bold]Found {len(existing_tw_items):,} Taskwarrior tasks in sync scope[/bold]"
             )
+
+            # Resume any interrupted TW→Asana task creation before normal change detection.
+            # The marker lives on the Taskwarrior task itself, so this does not depend on
+            # syncall's cache or preference files.
+            resumed_pending = resume_pending_asana_comments(
+                tw_side,
+                asana_side,
+                existing_tw_items,
+                console=console,
+            )
+            if resumed_pending:
+                logger.info(
+                    f"Resumed comment synchronization for {resumed_pending} interrupted "
+                    "Taskwarrior→Asana task(s).",
+                )
+
+            if resumed_pending:
+                with console.status(
+                    "[bold]Refreshing Taskwarrior snapshot after recovery...[/bold]",
+                    spinner="dots",
+                ):
+                    existing_tw_items = tw_side.get_all_items()
+
+            recovered = {
+                str(item["uuid"]): str(item["asana_gid"])
+                for item in existing_tw_items
+                if item.get("asana_gid")
+            }
+            recovered_count = aggregator.recover_correspondences(recovered)
+            if recovered_count:
+                logger.info(
+                    f"Recovered {recovered_count} Asana↔Taskwarrior task mapping(s) "
+                    "from Taskwarrior.",
+                )
+                aggregator.flush_correspondences()
+
+            # Backfill all current mapped identities before doing any network writes. This
+            # makes the mapping reconstructable even if syncall preference files are later lost.
+            with console.status(
+                "[bold]Persisting Asana task identities in Taskwarrior...[/bold]",
+                spinner="dots",
+            ):
+                backfilled = tw_side.backfill_asana_gids(
+                    {
+                        str(tw_id): str(asana_id)
+                        for tw_id, asana_id in aggregator._B_to_A_map.items()
+                    },
+                )
+            if backfilled:
+                logger.info(f"Persisted Asana identity on {backfilled} Taskwarrior task(s).")
+
+            aggregator.sync()
             aggregator.flush_correspondences()
 
-        # Backfill all current mapped identities before doing any network writes. This makes
-        # the mapping reconstructable even if syncall preference/cache files are later lost.
-        with console.status(
-            "[bold]Persisting Asana task identities in Taskwarrior...[/bold]",
-            spinner="dots",
-        ):
-            backfilled = tw_side.backfill_asana_gids(
-                {
-                    str(tw_id): str(asana_id)
-                    for tw_id, asana_id in aggregator._B_to_A_map.items()
-                },
-            )
-        if backfilled:
-            logger.info(f"Persisted Asana identity on {backfilled} Taskwarrior task(s).")
+            # Backfill any mappings created during this sync too.
+            with console.status(
+                "[bold]Persisting newly created Asana task identities...[/bold]",
+                spinner="dots",
+            ):
+                post_sync_backfilled = tw_side.backfill_asana_gids(
+                    {
+                        str(tw_id): str(asana_id)
+                        for tw_id, asana_id in aggregator._B_to_A_map.items()
+                    },
+                )
+            if post_sync_backfilled:
+                logger.info(
+                    f"Persisted Asana identity on {post_sync_backfilled} newly mapped "
+                    "Taskwarrior task(s).",
+                )
+    finally:
+        change_log.finish(failed=sys.exc_info()[0] is not None)
+        sync_lock.close()
 
-        aggregator.sync()
-        aggregator.flush_correspondences()
-
-        # Backfill any mappings created during this sync too.
-        with console.status(
-            "[bold]Persisting newly created Asana task identities...[/bold]",
-            spinner="dots",
-        ):
-            post_sync_backfilled = tw_side.backfill_asana_gids(
-                {
-                    str(tw_id): str(asana_id)
-                    for tw_id, asana_id in aggregator._B_to_A_map.items()
-                },
-            )
-        if post_sync_backfilled:
-            logger.info(
-                f"Persisted Asana identity on {post_sync_backfilled} newly mapped "
-                "Taskwarrior task(s).",
-            )
-
-    sync_lock.close()
     return 0
 
 

@@ -144,6 +144,17 @@ You do **not** need to manually configure internal fields such as:
 
 If you want to view/edit user-facing fields such as `client` or `notes` with normal Taskwarrior commands outside syncall's runtime overrides, persistent Taskwarrior UDA configuration may still be convenient.
 
+## Change logs
+
+Each `./scripts/sync-work` run appends a review log for both directions:
+
+```text
+~/.config/syncall/logs/taskwarrior-to-asana.log
+~/.config/syncall/logs/asana-to-taskwarrior.log
+```
+
+The sync prints the absolute paths. Use these files to see which tasks, fields, comments, and annotations a run actually changed. Sync does not read the logs back.
+
 ## Read-only incident audit
 
 This fork includes:

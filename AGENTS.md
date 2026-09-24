@@ -146,7 +146,12 @@ Progress totals must reach 100% even when conversions are deliberately skipped.
 
 `./scripts/audit-asana-window` is the current read-only forensic tool.
 
-Future work should add an append-only persistent atomic write journal containing run ID, task identities, direction, operation, exact before/after field diff, result and errors.
+Each `./scripts/sync-work` run also appends plain-text change logs under `~/.config/syncall/logs/`:
+
+- `taskwarrior-to-asana.log` records creates, updates, deletes, and comments written to Asana
+- `asana-to-taskwarrior.log` records the corresponding Taskwarrior writes, including local identity bookkeeping
+
+The logs include run id, task ids, operation, result, and before/after field values. They are not sync truth.
 
 Do not use audit logs as sync truth.
 

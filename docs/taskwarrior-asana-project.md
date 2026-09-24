@@ -262,6 +262,17 @@ Keep the design simple and rule-driven. Avoid permanent per-task blacklists unle
 
 ## Auditability and forensics
 
+### Sync change logs
+
+Every work sync appends to two plain-text logs:
+
+- `~/.config/syncall/logs/taskwarrior-to-asana.log`
+- `~/.config/syncall/logs/asana-to-taskwarrior.log`
+
+The run prints both paths. Each record has a run id, task name, Taskwarrior uuid, Asana gid, an Asana link when the gid is known, operation, success or failure, and the before/after value of every changed field, including comments and annotations. Local identity bookkeeping is labeled as such. A run that writes nothing records that explicitly.
+
+These logs are an observability aid. They are not a source of sync truth, and a missing or unreadable log must not cause sync to guess a write.
+
 ### Existing read-only audit tool
 
 `./scripts/audit-asana-window` is the forensic tool for reconstructing Asana activity over a time window.
@@ -279,24 +290,7 @@ See `docs/taskwarrior-asana-operations.md` for exact commands and timezone examp
 
 ### Required future write journal
 
-The project should eventually have a first-class persistent atomic write journal so forensic work does not depend on reconstructing activity later.
-
-For every attempted remote/local mutation, the journal should record at least:
-
-- timestamp
-- run ID
-- direction
-- task GID / Taskwarrior UUID
-- task name/summary
-- operation type
-- exact field-level before/after diff
-- comment creation identity where relevant
-- whether it was skipped/no-op/succeeded/failed
-- exception/error for failures
-
-Prefer append-only JSONL or another simple inspectable format.
-
-This journal is an observability feature, not a source of sync truth.
+The directional change logs above are the current review record. A later journal may still move to structured JSONL if a more mechanical forensic format becomes useful. Any such journal remains observability only.
 
 ## September 2026 incident and lessons
 

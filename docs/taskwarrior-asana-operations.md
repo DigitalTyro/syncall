@@ -32,7 +32,7 @@ Use:
 ./scripts/update-verify
 ```
 
-This is the expected "ready to use" verification path. It pulls current `master`, installs the current code into the venv, checks dependencies, runs the full test suite, Ruff lint and Ruff format checks.
+This is the expected "ready to use" verification path. It installs the current checkout into the venv, checks dependencies, runs the full test suite, Ruff lint and Ruff format checks.
 
 The `.venv` is disposable. Persistent state is elsewhere.
 
@@ -64,6 +64,25 @@ Runtime-injected UDA definitions include:
 - user-facing fields: `client`, `notes`
 
 If the user wants to edit/report a user-facing UDA with the ordinary `task` command outside syncall's runtime overrides, persistent Taskwarrior configuration may still be useful. Do not expose internal sync-state fields as normal editing surfaces.
+
+## Change logs
+
+Each sync run appends to two plain-text logs. The absolute paths are printed at the start of the run. With the current `xdg` config location they are:
+
+```text
+~/.config/syncall/logs/taskwarrior-to-asana.log
+~/.config/syncall/logs/asana-to-taskwarrior.log
+```
+
+`taskwarrior-to-asana.log` records every create, update, delete, and comment written to Asana.
+
+`asana-to-taskwarrior.log` records every create, update, delete, annotation change, and local identity/comment-bookkeeping write made on Taskwarrior.
+
+Each run adds a header with a run id and a footer with a count. A run that writes nothing says so. Records include the task name, Taskwarrior uuid, Asana gid, an Asana link when the gid is known, the operation, whether it succeeded or failed, and the before/after value of each changed field. Comment and annotation adds, amendments, and removals are listed on the task record.
+
+These files are for review only. Sync does not read them when deciding what to write.
+
+If a run writes more than expected, stop, keep these logs, and use `audit-asana-window` as well before changing anything.
 
 ## Read-only Asana forensic audit
 

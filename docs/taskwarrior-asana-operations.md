@@ -58,13 +58,10 @@ The comment cache is not authoritative, but preserving it during an incident mak
 
 syncall injects the required internal UDA definitions at runtime. Normal sync does **not** require manually adding them to `.taskrc`.
 
-Important internal fields include:
+Runtime-injected UDA definitions include:
 
-- `asana_gid`
-- `asana_pending_comments`
-- `asana_comment_state`
-- `client`
-- `notes`
+- internal sync state: `asana_gid`, `asana_pending_comments`, `asana_comment_state`
+- user-facing fields: `client`, `notes`
 
 If the user wants to edit/report a user-facing UDA with the ordinary `task` command outside syncall's runtime overrides, persistent Taskwarrior configuration may still be useful. Do not expose internal sync-state fields as normal editing surfaces.
 

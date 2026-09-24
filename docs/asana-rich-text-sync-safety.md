@@ -2,6 +2,11 @@
 
 ## Purpose
 
+For the wider project context and operational runbook, also read:
+
+- `docs/taskwarrior-asana-project.md`
+- `docs/taskwarrior-asana-operations.md`
+
 This document records the safety constraints and intended future design for Asana descriptions/notes and comments/Taskwarrior annotations.
 
 It exists because Taskwarrior cannot faithfully represent all of Asana's rich-text structure. A naive "two-way sync" implementation can silently destroy information in Asana.

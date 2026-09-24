@@ -85,6 +85,18 @@ At the moment the list of supported synchronizations is the following:
 </tbody>
 </table>
 
+### DigitalTyro Taskwarrior ↔ Asana work-sync
+
+This fork contains substantial additional safety/recovery behaviour and a maintained project brief for the Taskwarrior ↔ Asana integration.
+
+Start with:
+
+- [Taskwarrior ↔ Asana project brief](docs/taskwarrior-asana-project.md)
+- [Operations runbook](docs/taskwarrior-asana-operations.md)
+- [Rich-text sync safety](docs/asana-rich-text-sync-safety.md)
+
+These documents describe the current personal work-sync architecture, safety invariants, incident history and planned roadmap.
+
 Each of the above should support _bi-directional_ synchronization between the
 said services. This means that on an _addition_, _modification_, or _deletion_
 of an item on one side, a corresponding addition, modification or deletion of

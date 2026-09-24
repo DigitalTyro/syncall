@@ -2,6 +2,7 @@
 
 import datetime
 import re
+import unicodedata
 
 import dateutil
 from bubop import logger, parse_datetime
@@ -11,6 +12,23 @@ from syncall.asana.rich_text import asana_html_to_markdown, markdown_to_asana_ht
 from syncall.types import SyncAnnotation, TwItem
 
 _CLIENT_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+
+def normalize_comment_text(text: str) -> str:
+    """Collapse whitespace so equivalent comments compare as the same text."""
+    return " ".join(unicodedata.normalize("NFC", str(text)).split())
+
+
+def comment_text_match_keys(text: str) -> frozenset[str]:
+    r"""Return exact and backslash-insensitive keys used to recognise an existing comment.
+
+    Taskwarrior and Asana can store the same comment with different backslash escaping
+    (`n\\\\,0` vs `n\\,0`, or `before\\after` vs `beforeafter`). Exact text is
+    still preferred; the relaxed key is only a duplicate-prevention fallback.
+    """
+    exact = normalize_comment_text(text)
+    relaxed = normalize_comment_text(str(text).replace("\\", ""))
+    return frozenset(key for key in (exact, relaxed) if key)
 
 
 def split_client_prefix(name: str) -> tuple[str | None, str]:

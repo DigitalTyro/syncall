@@ -82,6 +82,10 @@ Each run adds a header with a run id and a footer with a count. A run that write
 
 These files are for review only. Sync does not read them when deciding what to write.
 
+`html_notes` before/after lines ignore volatile Asana image URL signatures. If two descriptions differ only in `e=` / `t=` tokens, that is not a logged change.
+
+The console `Items updated` summary is counted by the generic synchronizer only when the Asana converter still has a real field to write. Comment identity repair is local bookkeeping and should not inflate that number.
+
 If a run writes more than expected, stop, keep these logs, and use `audit-asana-window` as well before changing anything.
 
 ## Read-only Asana forensic audit
@@ -172,7 +176,9 @@ A migration/hardening run may legitimately perform local maintenance such as:
 - reconciling historical annotation timestamps
 - recovering correspondence mappings
 
-These maintenance operations must not cause gratuitous outbound Asana writes.
+These maintenance operations must not cause gratuitous outbound Asana writes. In particular, rebuilding `asana_comment_state` must not reopen completed Asana tasks, move due dates, or post comments that already exist with slightly different backslash escaping.
+
+If you delete a duplicate Asana comment that syncall just posted, the next run tombstones that comment GID and drops the extra local annotation. It should not recreate the comment.
 
 A subsequent no-change run should settle to an actual no-op aside from read/reconciliation work.
 

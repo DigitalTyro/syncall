@@ -11,11 +11,14 @@ if TYPE_CHECKING:
     from syncall.sync_side import SyncSide
 
 from contextlib import nullcontext
+from dataclasses import is_dataclass, replace
+from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
 
 from bidict import bidict  # pyright: ignore[reportPrivateImportUsage]
-from bubop import PrefsManager, logger, pickle_dump, pickle_load
+from bubop import PrefsManager, logger, parse_datetime, pickle_dump, pickle_load
+from bubop.time import is_same_datetime
 from item_synchronizer import Synchronizer
 from item_synchronizer.helpers import SideChanges
 from item_synchronizer.resolution_strategy import AlwaysSecondRS, ResolutionStrategy
@@ -111,6 +114,12 @@ class Aggregator:
 
         # resolution strategy to resolve conflicts
         self._resolution_strategy = resolution_strategy
+        self._plain_converter_B_to_A = converter_B_to_A
+        converter_to_A = (
+            self._convert_existing_tw_to_asana
+            if side_A.name == "Asana" and side_B.name == "Tw"
+            else converter_B_to_A
+        )
 
         # item synchronizer -------------------------------------------------------------------
         def side_B_fn(fn):
@@ -131,7 +140,7 @@ class Aggregator:
             updater_to_B=side_B_fn(self.updater_to),
             deleter_to_A=side_A_fn(self.deleter_to),
             deleter_to_B=side_B_fn(self.deleter_to),
-            converter_to_A=converter_B_to_A,
+            converter_to_A=converter_to_A,
             converter_to_B=converter_A_to_B,
             item_getter_A=side_A_fn(self.item_getter_for),
             item_getter_B=side_B_fn(self.item_getter_for),
@@ -475,6 +484,149 @@ class Aggregator:
     def _advance_operation_progress(self) -> None:
         if self._operation_progress is not None and self._operation_progress_task is not None:
             self._operation_progress.advance(self._operation_progress_task)
+
+    def _convert_existing_tw_to_asana(self, tw_item: Item) -> Item | None:
+        """Convert a Taskwarrior task, skipping Asana writes that are not real TW field edits."""
+        converted = self._plain_converter_B_to_A(tw_item)
+        if converted is None:
+            return None
+        tw_id = str(tw_item.get("uuid") or "")
+        if not tw_id or tw_id not in self._B_to_A_map:
+            return converted
+        limited = self._limit_asana_update_to_tw_changes(tw_id, converted)
+        if limited is None:
+            # item_synchronizer skips the updater when the converter returns None, so count
+            # this as a finished no-op operation or the progress bar never reaches 100%.
+            self._advance_operation_progress()
+            return None
+        return limited
+
+    def _limit_asana_update_to_tw_changes(self, tw_id: str, converted: Item) -> Item | None:
+        """Keep live Asana values for fields Taskwarrior did not actually change."""
+        asana_keys = self._asana_keys_from_tw_changes(self._changed_tw_source_fields(tw_id))
+        if not asana_keys:
+            return None
+
+        live = self._items_A.get(str(self._B_to_A_map[tw_id]))
+        if live is None:
+            return converted
+
+        limited = self._apply_asana_replacements(
+            converted,
+            self._live_asana_replacements(live, asana_keys),
+        )
+        if limited is None or self._asana_update_is_noop(live, limited):
+            return None
+        return limited
+
+    @staticmethod
+    def _asana_keys_from_tw_changes(changed: set[str]) -> set[str]:
+        asana_keys: set[str] = set()
+        if "description" in changed or "client" in changed:
+            asana_keys.add("name")
+        if "status" in changed:
+            asana_keys.add("completed")
+        if "due" in changed:
+            asana_keys.update(("due_on", "due_at"))
+        return asana_keys
+
+    def _live_asana_replacements(self, live: Item, asana_keys: set[str]) -> dict[str, object]:
+        replacements: dict[str, object] = {
+            "html_notes": self._asana_field(live, "html_notes") or "<body></body>",
+            "comments": self._asana_field(live, "comments") or (),
+        }
+        if "name" not in asana_keys:
+            replacements["name"] = self._asana_field(live, "name")
+        if "completed" not in asana_keys:
+            replacements["completed"] = self._asana_field(live, "completed")
+            replacements["completed_at"] = self._asana_field(live, "completed_at")
+        if "due_on" not in asana_keys:
+            replacements["due_on"] = self._asana_field(live, "due_on")
+            replacements["due_at"] = self._asana_field(live, "due_at")
+        return replacements
+
+    @staticmethod
+    def _apply_asana_replacements(
+        converted: Item, replacements: dict[str, object]
+    ) -> Item | None:
+        if is_dataclass(converted) and not isinstance(converted, type):
+            return replace(converted, **replacements)
+        if isinstance(converted, dict):
+            return {**converted, **replacements}
+        return None
+
+    def _asana_update_is_noop(self, live: Item, limited: Item) -> bool:
+        return self._side_A.items_are_identical(
+            live,
+            limited,
+            ignore_keys=(
+                "comments",
+                "completed_at",
+                "created_at",
+                "gid",
+                "html_notes",
+                "modified_at",
+            ),
+        )
+
+    def _changed_tw_source_fields(self, tw_id: str) -> set[str]:
+        current = self._items_B.get(tw_id)
+        if current is None:
+            return set()
+        serdes_dir, _ = self._get_serdes_dirs(self._helper_B)
+        snapshot_path = serdes_dir / str(tw_id)
+        if not snapshot_path.is_file():
+            return set()
+        previous = pickle_load(snapshot_path)
+        changed: set[str] = set()
+        for key in ("description", "client", "status", "due"):
+            if not self._tw_source_values_match(
+                key,
+                self._tw_field(previous, key),
+                self._tw_field(current, key),
+            ):
+                changed.add(key)
+        return changed
+
+    @staticmethod
+    def _tw_field(item: object, name: str) -> object:
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    @staticmethod
+    def _asana_field(item: object, name: str) -> object:
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            return item.get(name)
+        try:
+            return item[name]  # type: ignore[index]
+        except (KeyError, AttributeError, TypeError):
+            return getattr(item, name, None)
+
+    @staticmethod
+    def _tw_source_values_match(key: str, left: object, right: object) -> bool:
+        if key == "due":
+            return Aggregator._due_values_match(left, right)
+        left_value = None if left in (None, "") else left
+        right_value = None if right in (None, "") else right
+        return left_value == right_value
+
+    @staticmethod
+    def _due_values_match(left: object, right: object) -> bool:
+        if left in (None, "") and right in (None, ""):
+            return True
+        if left in (None, "") or right in (None, ""):
+            return False
+        try:
+            left_dt = left if isinstance(left, datetime) else parse_datetime(str(left))
+            right_dt = right if isinstance(right, datetime) else parse_datetime(str(right))
+        except (TypeError, ValueError):
+            return str(left) == str(right)
+        return is_same_datetime(left_dt, right_dt, tol=timedelta(minutes=1))
 
     def _checkpoint_correspondence(
         self,

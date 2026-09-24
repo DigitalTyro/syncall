@@ -5,7 +5,6 @@ import datetime
 import hashlib
 import json
 import tempfile
-import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -24,6 +23,7 @@ from syncall.change_log import (
     task_name_from_item,
 )
 from syncall.sync_side import ItemType, SyncSide
+from syncall.tw_asana_utils import comment_text_match_keys, normalize_comment_text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -285,8 +285,11 @@ class TaskWarriorSide(SyncSide):
 
     @classmethod
     def _annotation_text_key(cls, annotation: object) -> str:
-        text = unicodedata.normalize("NFC", cls._annotation_text(annotation))
-        return " ".join(text.split())
+        return normalize_comment_text(cls._annotation_text(annotation))
+
+    @classmethod
+    def _annotation_match_keys(cls, annotation: object) -> frozenset[str]:
+        return comment_text_match_keys(cls._annotation_text(annotation))
 
     @classmethod
     def _annotation_text_digest(cls, annotation: object) -> str:
@@ -497,14 +500,14 @@ class TaskWarriorSide(SyncSide):
         cls,
         annotations: Sequence[object],
         used: set[int],
-        text_key: str,
+        match_keys: frozenset[str],
         *,
         target_entry: datetime.datetime | None = None,
     ) -> int | None:
         matches = [
             index
             for index, annotation in enumerate(annotations)
-            if index not in used and cls._annotation_text_key(annotation) == text_key
+            if index not in used and bool(match_keys & cls._annotation_match_keys(annotation))
         ]
         if not matches or target_entry is None:
             return matches[0] if matches else None
@@ -642,7 +645,7 @@ class TaskWarriorSide(SyncSide):
         return self._find_annotation_by_text(
             annotations,
             used_annotations,
-            self._annotation_text_key(remote),
+            self._annotation_match_keys(remote),
             target_entry=remote_entry,
         )
 

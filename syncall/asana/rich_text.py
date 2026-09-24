@@ -19,6 +19,9 @@ _UL_RE = re.compile(r"^\s*[-+*]\s+(.+)$")
 _OL_RE = re.compile(r"^\s*\d+[.)]\s+(.+)$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _HR_RE = re.compile(r"^\s*(?:---+|\*\*\*+)\s*$")
+_SIGNED_ASSET_QUERY_RE = re.compile(
+    r"\?e=\d+(&(?:amp;)?v=0&(?:amp;)?t=)[A-Za-z0-9_\-]+",
+)
 
 
 def _inline_markdown_to_html(text: str) -> str:
@@ -337,6 +340,17 @@ class _AsanaHTMLToMarkdownParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         self.parts.append(data)
+
+
+def canonical_asana_html(html_notes: str | None) -> str:
+    """Return Asana HTML with volatile asset URL signatures removed.
+
+    Asana re-signs ``asanausercontent.com`` image URLs on every read (``e=`` expiry and
+    ``t=`` token). Those changes are not document edits and must not count as updates.
+    """
+    if not html_notes:
+        return ""
+    return _SIGNED_ASSET_QUERY_RE.sub(r"?e=0\1TOKEN", html_notes)
 
 
 def asana_html_to_markdown(html_notes: str) -> str:

@@ -475,6 +475,33 @@ def test_deleted_remote_comment_tombstone_prevents_resurrection() -> None:
     assert side.reconcile_asana_comment_state("tw-1", raw_task, []) == []
 
 
+def test_backslash_variant_annotation_binds_to_existing_asana_comment() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "annotations": [
+            {
+                "entry": "20260921T133503Z",
+                "description": r"select=eq(n\,0) beforeafter",
+            },
+        ],
+    }
+    side, _, imported = _side_with_export(raw_task)
+    remote = [
+        AsanaComment(
+            r"select=eq(n\\,0) before\after",
+            gid="story-1",
+            created_at=datetime.datetime(2024, 10, 8, 8, 42, 12, tzinfo=datetime.UTC),
+        ),
+    ]
+
+    assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == []
+    state = json.loads(imported[0]["asana_comment_state"])
+    assert "story-1" in state["bindings"]
+    assert len(imported[0]["annotations"]) == 1
+
+
 def test_duplicate_text_prefers_remote_created_time_and_keeps_new_local_duplicate() -> None:
     raw_task = {
         "uuid": "tw-1",

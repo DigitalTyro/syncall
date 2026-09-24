@@ -102,6 +102,8 @@ The desired behaviour for comments is intentionally narrower than normal two-way
 
 The durable per-task Taskwarrior UDA `asana_comment_state` stores comment identity bindings. Normal sync reconciles that state against live Asana history and repairs missing/incomplete state automatically.
 
+Deleted Asana comment GIDs stay tombstoned in that UDA so a leftover local annotation is not posted again. Outbound duplicate checks also treat comments that differ only by backslash escaping as the same text, because Taskwarrior and Asana can store `\\` differently.
+
 The Asana comment cache is a **performance optimisation only**. Correctness must not depend on it.
 
 ### 4. Durable identity and recoverability
@@ -146,10 +148,14 @@ Required behaviour:
 
 - compare semantic fields before writing
 - send only genuinely changed Asana fields
+- compare Asana `html_notes` after stripping volatile `asanausercontent.com` image URL signatures (`e=` / `t=`); those tokens change on every read and are not document edits
+- for an existing mapped task, Taskwarrior may only write Asana fields whose corresponding Taskwarrior source value changed since the last snapshot (`description`/`client` → name, `status` → completed, `due` → due date)
+- comment identity repair, annotation projection and notes projection must not reset Asana completion, due dates or names
 - after any successful target write, read back the **actual stored target state**
 - checkpoint that actual state, not merely the intended payload
 - failed writes must not advance source sync state
 - a rerun after a successful sync should converge to a no-op
+- the terminal `Items updated` count is the number of Asana updater calls that still had a real field to write; skipped no-ops must not inflate it
 
 This is both a correctness and auditability requirement: even a harmless same-value Asana PUT advances `modified_at` and creates noise.
 

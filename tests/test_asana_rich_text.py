@@ -1,4 +1,8 @@
-from syncall.asana.rich_text import asana_html_to_markdown, markdown_to_asana_html
+from syncall.asana.rich_text import (
+    asana_html_to_markdown,
+    canonical_asana_html,
+    markdown_to_asana_html,
+)
 
 
 def test_empty_notes() -> None:
@@ -100,3 +104,21 @@ def test_asana_image_projects_to_stable_asset_link() -> None:
     assert (
         "[image.png](https://app.asana.com/app/asana/-/get_asset?asset_id=1218736823205951)"
     ) in markdown
+
+
+def test_canonical_asana_html_ignores_signed_asset_query_tokens() -> None:
+    first = (
+        '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+        '?e=1790276561&amp;v=0&amp;t=OldToken" /></body>'
+    )
+    second = (
+        '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+        '?e=1790276562&amp;v=0&amp;t=NewToken" /></body>'
+    )
+    changed = (
+        '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+        '?e=1790276562&amp;v=0&amp;t=NewToken" alt="other" /></body>'
+    )
+
+    assert canonical_asana_html(first) == canonical_asana_html(second)
+    assert canonical_asana_html(first) != canonical_asana_html(changed)

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 from bidict import bidict
 from syncall.aggregator import Aggregator
 from syncall.asana.asana_side import AsanaSide
-from syncall.asana.asana_task import AsanaComment
-from syncall.change_log import TO_ASANA, TO_TASKWARRIOR, SyncChangeLog, diff_stored_items
+from syncall.asana.asana_task import AsanaComment, AsanaTask
+from syncall.change_log import (
+    TO_ASANA,
+    TO_TASKWARRIOR,
+    SyncChangeLog,
+    diff_stored_items,
+    task_name_from_item,
+)
 from syncall.taskwarrior.taskwarrior_side import TaskWarriorSide
 
 
@@ -24,6 +31,21 @@ def _asana_task(name: str, **overrides: object) -> dict:
     }
     task.update(overrides)
     return task
+
+
+def test_task_name_from_asana_task_ignores_missing_client() -> None:
+    task = AsanaTask(
+        completed=False,
+        completed_at=None,
+        created_at=datetime.datetime(2026, 9, 24, tzinfo=datetime.UTC),
+        due_at=None,
+        due_on=None,
+        name="[Acme] Proposal",
+        modified_at=None,
+        gid="asana-1",
+    )
+
+    assert task_name_from_item(task) == "[Acme] Proposal"
 
 
 def test_each_run_appends_a_header_to_both_logs(tmp_path) -> None:
@@ -81,6 +103,29 @@ def test_field_comment_and_annotation_changes_include_before_and_after() -> None
     assert texts[0].before == "Original"
     assert texts[0].after == "Rewritten"
     assert texts[1].after == "Added later"
+
+
+def test_signed_asset_url_refresh_is_not_logged_as_html_notes_change() -> None:
+    fields, texts = diff_stored_items(
+        {
+            "name": "Task",
+            "html_notes": (
+                '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+                '?e=1790276561&amp;v=0&amp;t=OldToken" /></body>'
+            ),
+        },
+        {
+            "name": "Task",
+            "html_notes": (
+                '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+                '?e=1790276562&amp;v=0&amp;t=NewToken" /></body>'
+            ),
+        },
+        asana=True,
+    )
+
+    assert fields == []
+    assert texts == []
 
     _fields, annotation_changes = diff_stored_items(
         {

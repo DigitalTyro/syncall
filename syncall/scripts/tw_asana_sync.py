@@ -315,7 +315,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                     "created_at",
                     "modified_at",
                 ),
-                ("annotations", "end", "entry", "modified", "urgency"),
+                ("annotations", "end", "entry", "modified", "notes", "urgency"),
             ),
             change_log=change_log,
         ) as aggregator:

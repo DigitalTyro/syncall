@@ -20,6 +20,8 @@ from uuid import uuid4
 from bubop import logger
 from xdg import xdg_config_home
 
+from syncall.asana.rich_text import canonical_asana_html
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -205,7 +207,7 @@ def diff_stored_items(
     fields = [
         FieldChange(name, _field(before, name), _field(after, name))
         for name in field_names
-        if not _same(_field(before, name), _field(after, name))
+        if not _same_field(name, _field(before, name), _field(after, name))
     ]
     if asana:
         texts = _diff_keyed_texts(
@@ -443,11 +445,28 @@ def _annotation_entry(annotation: object) -> tuple[str, str]:
 
 
 def _field(item: object, name: str) -> object:
+    """Read one field, treating a missing name as empty.
+
+    AsanaTask is a Mapping whose ``get`` raises AttributeError for unknown names
+    instead of returning the default. Comment logging looks up Taskwarrior-only
+    fields such as ``client`` on those tasks.
+    """
     if item is None:
         return None
     if isinstance(item, Mapping):
-        return item.get(name)
+        try:
+            return item[name]
+        except (KeyError, AttributeError):
+            return None
     return getattr(item, name, None)
+
+
+def _same_field(name: str, before: object, after: object) -> bool:
+    if name == "html_notes":
+        return canonical_asana_html(str(before or "")) == canonical_asana_html(
+            str(after or "")
+        )
+    return _same(before, after)
 
 
 def _same(before: object, after: object) -> bool:

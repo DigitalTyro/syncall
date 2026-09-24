@@ -1,6 +1,5 @@
 import datetime
 import json
-import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -9,9 +8,11 @@ from bubop import logger
 from rich.console import Console
 
 from syncall.asana.asana_task import AsanaComment, AsanaTask
+from syncall.asana.rich_text import canonical_asana_html
 from syncall.change_log import TO_ASANA, TextChange
 from syncall.progress import make_progress
 from syncall.sync_side import SyncSide
+from syncall.tw_asana_utils import comment_text_match_keys, normalize_comment_text
 from syncall.types import AsanaGID
 
 GET_TASKS_PAGE_SIZE = 100
@@ -245,8 +246,11 @@ class AsanaSide(SyncSide):
 
     @staticmethod
     def _comment_key(comment: str | AsanaComment) -> str:
-        text = unicodedata.normalize("NFC", str(comment))
-        return " ".join(text.split())
+        return normalize_comment_text(str(comment))
+
+    @staticmethod
+    def _comment_match_keys(comment: str | AsanaComment) -> frozenset[str]:
+        return comment_text_match_keys(str(comment))
 
     def _add_missing_comments(
         self,
@@ -254,25 +258,25 @@ class AsanaSide(SyncSide):
         comments: Sequence[str | AsanaComment],
     ) -> None:
         existing = {
-            self._comment_key(comment)
+            key
             for comment in self._get_comments(item_id)
-            if self._comment_key(comment)
+            for key in self._comment_match_keys(comment)
         }
         for comment in comments:
             comment_text = str(comment).strip()
-            comment_key = self._comment_key(comment)
-            if not comment_key or comment_key in existing:
+            comment_keys = self._comment_match_keys(comment)
+            if not comment_keys or comment_keys & existing:
                 continue
 
             # Never trust cache/state for a write. Re-read live Asana stories immediately
             # before creating a comment so stale state cannot create duplicates.
             live_existing = {
-                self._comment_key(remote_comment)
+                key
                 for remote_comment in self._get_comments(item_id)
-                if self._comment_key(remote_comment)
+                for key in self._comment_match_keys(remote_comment)
             }
             existing.update(live_existing)
-            if comment_key in existing:
+            if comment_keys & existing:
                 continue
 
             try:
@@ -280,7 +284,7 @@ class AsanaSide(SyncSide):
             except Exception as exc:
                 self._log_comment_add(item_id, comment_text, error=exc)
                 raise
-            existing.add(comment_key)
+            existing.update(comment_keys)
             self._log_comment_add(item_id, comment_text)
 
     def _log_comment_add(
@@ -429,6 +433,13 @@ class AsanaSide(SyncSide):
             if comments1 != comments2:
                 return False
             compare_keys.discard("comments")
+
+        if "html_notes" in compare_keys:
+            notes1 = canonical_asana_html(str(item1.get("html_notes") or ""))
+            notes2 = canonical_asana_html(str(item2.get("html_notes") or ""))
+            if notes1 != notes2:
+                return False
+            compare_keys.discard("html_notes")
 
         if item1.get("due_at", None) is not None and item2.get("due_at", None) is not None:
             compare_keys.discard("due_on")

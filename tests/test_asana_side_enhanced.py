@@ -320,6 +320,29 @@ def test_comment_metadata_does_not_create_false_sync_change() -> None:
     assert not AsanaSide.items_are_identical(legacy, structured)
 
 
+def test_signed_asset_url_refresh_is_not_an_asana_change() -> None:
+    first = AsanaTask.from_raw_task(
+        {
+            **_raw_task("1"),
+            "html_notes": (
+                '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+                '?e=1790276561&amp;v=0&amp;t=OldToken" /></body>'
+            ),
+        },
+    )
+    second = AsanaTask.from_raw_task(
+        {
+            **_raw_task("1"),
+            "html_notes": (
+                '<body><img src="https://asanausercontent.com/us1/assets/1/2/abc'
+                '?e=1790276562&amp;v=0&amp;t=NewToken" /></body>'
+            ),
+        },
+    )
+
+    assert AsanaSide.items_are_identical(first, second)
+
+
 def test_structured_comment_cache_periodically_refreshes_edited_comments(tmp_path) -> None:
     cache_path = tmp_path / "comments.json"
     cache_path.write_text(
@@ -373,6 +396,21 @@ def test_existing_comment_match_ignores_line_endings_and_outer_whitespace() -> N
     ]
 
     side._add_missing_comments("1", ["First line\nSecond line"])
+
+    client.tasks.add_comment.assert_not_called()
+
+
+def test_existing_comment_match_ignores_backslash_escaping_differences() -> None:
+    side, client = _side()
+    client.tasks.stories.return_value = [
+        {
+            "gid": "s1",
+            "type": "comment",
+            "text": r"select=eq(n\\,0) before\after",
+        },
+    ]
+
+    side._add_missing_comments("1", [r"select=eq(n\,0) beforeafter"])
 
     client.tasks.add_comment.assert_not_called()
 

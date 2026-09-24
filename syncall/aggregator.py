@@ -38,6 +38,23 @@ from syncall.progress import make_progress
 from syncall.side_helper import SideHelper
 
 
+def _format_sync_failures(errors: list[BaseException]) -> str:
+    """Return the short underlying messages for failed sync writes."""
+    parts: list[str] = []
+    for exc in errors:
+        stderr = getattr(exc, "stderr", None)
+        if isinstance(stderr, bytes):
+            text = stderr.decode(errors="replace")
+        elif stderr:
+            text = str(stderr)
+        else:
+            text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        text = text.strip().strip('"')
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
 class Aggregator:
     """Aggregator class that manages the synchronization between two arbitrary sides.
 
@@ -155,6 +172,7 @@ class Aggregator:
         self._operation_progress = None
         self._operation_progress_task = None
         self._operation_failed = False
+        self._operation_errors: list[BaseException] = []
         self._written_serdes: set[tuple[str, ID]] = set()
         self._live_asana_comments: dict[ID, Sequence[object]] = {}
         self.cleaned_up = False
@@ -298,6 +316,7 @@ class Aggregator:
             return
 
         self._operation_failed = False
+        self._operation_errors = []
         self._written_serdes = set()
         progress = make_progress(console=console, unit="ops")
         with progress:
@@ -314,9 +333,10 @@ class Aggregator:
                 self.flush_correspondences()
 
         if self._operation_failed:
+            detail = _format_sync_failures(self._operation_errors)
             raise RuntimeError(
                 "One or more sync writes failed; sync state was not committed so the "
-                "next run can retry safely.",
+                "next run can retry safely." + (f" {detail}" if detail else ""),
             )
 
         if cache_items:
@@ -429,14 +449,26 @@ class Aggregator:
 
         get_comments_live, ensure_comments, reconcile = functions
         self._live_asana_comments = {}
-        for tw_ref, asana_ref in self._B_to_A_map.items():
-            self._sync_one_comment_history(
-                str(tw_ref),
-                str(asana_ref),
-                get_comments_live=get_comments_live,
-                ensure_comments=ensure_comments,
-                reconcile=reconcile,
-            )
+        pairs = [
+            (str(tw_ref), str(asana_ref)) for tw_ref, asana_ref in self._B_to_A_map.items()
+        ]
+        if not pairs:
+            return
+
+        progress = make_progress(console=Console(), unit="tasks")
+        with progress:
+            progress_task = progress.add_task("Reconciling comments", total=len(pairs))
+            for tw_ref, asana_ref in pairs:
+                try:
+                    self._sync_one_comment_history(
+                        tw_ref,
+                        asana_ref,
+                        get_comments_live=get_comments_live,
+                        ensure_comments=ensure_comments,
+                        reconcile=reconcile,
+                    )
+                finally:
+                    progress.advance(progress_task)
 
     def start(self) -> None:
         """Initialize the aggregator."""
@@ -484,6 +516,25 @@ class Aggregator:
     def _advance_operation_progress(self) -> None:
         if self._operation_progress is not None and self._operation_progress_task is not None:
             self._operation_progress.advance(self._operation_progress_task)
+
+    def _record_operation_failure(
+        self,
+        helper: SideHelper,
+        action: str,
+        exc: BaseException,
+    ) -> None:
+        """Remember a failed write and log the underlying cause at error level.
+
+        item_synchronizer also logs "Operation failed", but only the exception type is
+        visible unless verbose mode is on. The Taskwarrior/Asana message is the useful part.
+        """
+        self._operation_failed = True
+        errors = getattr(self, "_operation_errors", None)
+        if errors is None:
+            errors = []
+            self._operation_errors = errors
+        errors.append(exc)
+        logger.error(f"[{helper}] {action} failed: {_format_sync_failures([exc])}")
 
     def _convert_existing_tw_to_asana(self, tw_item: Item) -> Item | None:
         """Convert a Taskwarrior task, skipping Asana writes that are not real TW field edits."""
@@ -745,7 +796,7 @@ class Aggregator:
             self._written_serdes.add((helper.name, item_created_id))
             self._advance_operation_progress()
         except Exception as exc:
-            self._operation_failed = True
+            self._record_operation_failure(helper, "Create", exc)
             if created_id is None:
                 self._log_stored_change(
                     helper=helper,
@@ -813,7 +864,7 @@ class Aggregator:
             )
             self._advance_operation_progress()
         except Exception as exc:
-            self._operation_failed = True
+            self._record_operation_failure(helper, "Update", exc)
             observed = None
             try:
                 observed = side.get_item(item_id, use_cached=False)
@@ -858,7 +909,7 @@ class Aggregator:
             )
             self._advance_operation_progress()
         except Exception as exc:
-            self._operation_failed = True
+            self._record_operation_failure(helper, "Delete", exc)
             self._log_stored_change(
                 helper=helper,
                 item_id=item_id,

@@ -363,12 +363,16 @@ def _display(name: str, value: object) -> str:
 def _comment_state_summary(value: object) -> str:
     if _empty(value):
         return "(empty)"
-    try:
-        parsed = json.loads(str(value))
-        bindings = parsed.get("bindings", {})
-        count = len(bindings) if isinstance(bindings, dict) else 0
-    except (TypeError, ValueError):
+    parsed = value
+    if not isinstance(value, Mapping):
+        try:
+            parsed = json.loads(str(value))
+        except (TypeError, ValueError):
+            return "(comment identity present)"
+    if not isinstance(parsed, Mapping):
         return "(comment identity present)"
+    bindings = parsed.get("bindings", {})
+    count = len(bindings) if isinstance(bindings, Mapping) else 0
     return f"{count} comment binding(s)"
 
 

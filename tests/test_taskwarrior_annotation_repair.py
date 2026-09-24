@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from syncall.asana.asana_task import AsanaComment
 from syncall.taskwarrior.taskwarrior_side import TaskWarriorSide
@@ -553,6 +553,76 @@ def test_reconcile_comment_state_imports_missing_remote_annotation_directly() ->
             "description": "New remote comment",
         },
     ]
+
+
+def test_update_item_leaves_unmapped_taskwarrior_fields_untouched() -> None:
+    uuid = "e3f14392-855b-4038-8a6b-6c863974b6c1"
+    current = {
+        "uuid": uuid,
+        "description": "Review internal linking to top blogs",
+        "status": "pending",
+        "est": "3:00:00",
+        "rem": "3:00:00",
+        "billing_code": "SPEC-19",
+        "asana_comment_state": '{"version":1,"bindings":{}}',
+        "asana_pending_comments": "pending",
+        "asana_gid": "1218495745517024",
+        "urgency": 2.0,
+        "priority": "H",
+        "annotations": [{"entry": "20260923T133527Z", "description": "Existing note"}],
+    }
+    side = TaskWarriorSide.__new__(TaskWarriorSide)
+    tw = MagicMock()
+    tw.get_task.return_value = (7, current)
+    side._tw = tw
+    side._reload_items = False
+
+    side.update_item(
+        uuid,
+        status="completed",
+        description="Review internal linking to top blogs",
+        due=None,
+        client="Spectrum",
+        asana_gid="1218495745517024",
+        est="3:00:00",
+        rem="3:00:00",
+        billing_code="SPEC-19",
+        future_uda="anything",
+        asana_comment_state=current["asana_comment_state"],
+        priority="H",
+    )
+
+    payload = tw.task_update.call_args.args[0]
+    assert payload["uuid"] == uuid
+    assert payload["status"] == "completed"
+    assert payload["description"] == "Review internal linking to top blogs"
+    assert payload["due"] is None
+    assert payload["client"] == "Spectrum"
+    assert payload["asana_gid"] == "1218495745517024"
+    assert payload["annotations"] == current["annotations"]
+    assert set(payload) <= {
+        "uuid",
+        "status",
+        "description",
+        "due",
+        "client",
+        "asana_gid",
+        "annotations",
+    }
+
+
+def test_parse_comment_state_accepts_mapping_and_names_malformed_task() -> None:
+    parsed = TaskWarriorSide._parse_comment_state(
+        {"version": 1, "bindings": {"story-1": {"e": "20240101T000000Z", "h": "abc"}}},
+        item_id="tw-1",
+    )
+    assert parsed["story-1"]["e"] == "20240101T000000Z"
+
+    with patch("syncall.taskwarrior.taskwarrior_side.logger") as side_logger:
+        assert TaskWarriorSide._parse_comment_state("{not json", item_id="tw-bad") == {}
+    message = side_logger.warning.call_args.args[0]
+    assert "tw-bad" in message
+    assert "{not json" in message
 
 
 def test_bound_comment_does_not_capture_new_same_text_annotation() -> None:

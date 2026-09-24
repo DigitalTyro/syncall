@@ -230,7 +230,10 @@ def cache_or_reuse_cached_combination(
     return config_name
 
 
-def report_toplevel_exception(is_verbose: bool):
+def report_toplevel_exception(
+    is_verbose: bool,
+    exception: BaseException | None = None,
+):
     s = (
         "Application failed; Below you can find the error message and stack trace. If you"
         " think this is a bug, attach this stack trace to create a new issue ->"
@@ -243,7 +246,12 @@ def report_toplevel_exception(is_verbose: bool):
             " issue."
         )
 
-    logger.exception(s)
+    # atexit runs after the original traceback has already been handled, so there is no
+    # active exception for logger.exception to print.
+    if exception is None:
+        logger.exception(s)
+    else:
+        logger.opt(exception=exception).error(s)
 
 
 def inform_about_combination_name_usage(combination_name: str):
@@ -397,7 +405,10 @@ def register_teardown_handler(
             if hooks.exception.__class__ is KeyboardInterrupt:
                 logger.error("C-c pressed, exiting...")
             else:
-                report_toplevel_exception(is_verbose=verbose >= 1)
+                report_toplevel_exception(
+                    is_verbose=verbose >= 1,
+                    exception=hooks.exception,
+                )
                 return 1
 
         if inform_about_config:

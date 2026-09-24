@@ -286,6 +286,34 @@ def test_sync_does_not_commit_source_snapshot_before_writes_succeed(tmp_path) ->
     aggregator.flush_correspondences.assert_called_once()
 
 
+def test_sync_failure_includes_the_underlying_taskwarrior_error(tmp_path) -> None:
+    aggregator = _minimal_sync_aggregator(tmp_path)
+    changes_A = MagicMock()
+    changes_A.new = set()
+    changes_A.modified = {"a1"}
+    changes_A.deleted = set()
+    changes_B = MagicMock()
+    changes_B.new = set()
+    changes_B.modified = set()
+    changes_B.deleted = set()
+    aggregator.detect_changes = MagicMock(side_effect=[changes_A, changes_B])
+    aggregator._count_sync_operations = MagicMock(return_value=1)
+
+    class _TaskwarriorError(Exception):
+        def __init__(self) -> None:
+            super().__init__("task modify ... est:3:00:00")
+            self.stderr = b"The duration value '3:00:00' is not supported."
+
+    def fail_after_write_attempt(**_kwargs) -> None:
+        aggregator._operation_failed = True
+        aggregator._operation_errors = [_TaskwarriorError()]
+
+    aggregator._synchronizer.sync.side_effect = fail_after_write_attempt
+
+    with pytest.raises(RuntimeError, match="duration value '3:00:00' is not supported"):
+        aggregator.sync()
+
+
 def test_sync_commits_source_snapshot_only_after_successful_writes(tmp_path) -> None:
     aggregator = _minimal_sync_aggregator(tmp_path)
     changes_A = MagicMock()

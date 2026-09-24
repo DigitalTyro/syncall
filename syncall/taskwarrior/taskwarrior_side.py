@@ -37,6 +37,20 @@ tw_asana_gid_key = "asana_gid"
 tw_asana_pending_comments_key = "asana_pending_comments"
 tw_asana_comment_state_key = "asana_comment_state"
 ASANA_COMMENT_STATE_VERSION = 1
+# `task modify` receives only these fields. Every other attribute, including any
+# user-defined UDA added later, stays exactly as Taskwarrior stored it.
+_TW_MODIFY_FIELDS = frozenset(
+    {
+        "description",
+        "status",
+        "due",
+        "end",
+        "entry",
+        tw_notes_key,
+        tw_client_key,
+        tw_asana_gid_key,
+    },
+)
 
 OrderByType = Literal[
     "description",
@@ -314,21 +328,34 @@ class TaskWarriorSide(SyncSide):
         return parse_datetime_(value)
 
     @classmethod
-    def _parse_comment_state(cls, raw_value: object) -> dict[str, dict[str, str]]:
+    def _parse_comment_state(
+        cls,
+        raw_value: object,
+        *,
+        item_id: str | None = None,
+    ) -> dict[str, dict[str, str]]:
         if not raw_value:
             return {}
-        try:
-            parsed = json.loads(str(raw_value))
-        except (TypeError, ValueError):
-            logger.warning("Ignoring malformed Taskwarrior Asana comment sync state.")
-            return {}
+        if isinstance(raw_value, Mapping):
+            parsed = raw_value
+        else:
+            try:
+                parsed = json.loads(str(raw_value))
+            except (TypeError, ValueError):
+                where = f" on Taskwarrior task {item_id}" if item_id else ""
+                preview = str(raw_value).replace("\n", " ")[:80]
+                logger.warning(
+                    f"Ignoring malformed Taskwarrior Asana comment sync state{where}: "
+                    f"{preview!r}.",
+                )
+                return {}
         if (
-            not isinstance(parsed, dict)
+            not isinstance(parsed, Mapping)
             or parsed.get("version") != ASANA_COMMENT_STATE_VERSION
         ):
             return {}
         bindings = parsed.get("bindings")
-        if not isinstance(bindings, dict):
+        if not isinstance(bindings, Mapping):
             return {}
 
         valid: dict[str, dict[str, str]] = {}
@@ -739,7 +766,10 @@ class TaskWarriorSide(SyncSide):
             return []
 
         annotations = list(raw_task.get("annotations", current_item.get("annotations", ())))
-        bindings = self._parse_comment_state(raw_task.get(tw_asana_comment_state_key))
+        bindings = self._parse_comment_state(
+            raw_task.get(tw_asana_comment_state_key),
+            item_id=item_id,
+        )
         remote_by_gid = {
             gid: comment
             for comment in remote_comments
@@ -922,18 +952,25 @@ class TaskWarriorSide(SyncSide):
         return repaired
 
     def update_item(self, item_id: str, **changes):
-        changes.pop("id", False)
-        # Existing-task comments are reconciled independently from whole-task scalar sync.
-        changes.pop("annotations", None)
-        t = self._tw.get_task(uuid=UUID(item_id))[-1]
+        """Update mapped Taskwarrior fields and leave every other attribute untouched.
 
-        unwanted_keys = ["imask", "recur", "rtype", "parent", "urgency"]
-        for i in unwanted_keys:
-            t.pop(i, False)
-
-        d = dict(t)
-        d.update(changes)
-        self._tw.task_update(d)
+        `task modify` sets only the fields it is given, and it rejects some stored
+        representations. Copying the whole task would resend local UDAs such as a
+        duration stored as ``3:00:00``. User fields are omitted entirely, so a future
+        UDA does not need its own exception. Comment identity is written by ``task
+        import``, not by this path.
+        """
+        current = self._tw.get_task(uuid=UUID(item_id))[-1]
+        payload: dict[str, Any] = {
+            key: value for key, value in changes.items() if key in _TW_MODIFY_FIELDS
+        }
+        payload["uuid"] = str(item_id)
+        # taskw treats a plain dict as a full annotation replacement. Pass the live
+        # annotations through unchanged so a scalar update does not delete them.
+        annotations = current.get("annotations")
+        if annotations is not None:
+            payload["annotations"] = annotations
+        self._tw.task_update(payload)
         self._reload_items = True
 
     def add_item(self, item: ItemType) -> ItemType:

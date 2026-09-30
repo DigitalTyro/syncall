@@ -86,14 +86,16 @@ def resume_pending_asana_comments(
                 if change_log is not None
                 else nullcontext()
             )
-            with context:
-                desired_asana = convert_tw_to_asana(item)
-                asana_side.ensure_comments(
-                    str(item["asana_gid"]),
-                    desired_asana.comments,
-                )
-                tw_side.clear_pending_asana_comments(str(item["uuid"]))
-            progress.advance(task_id)
+            try:
+                with context:
+                    desired_asana = convert_tw_to_asana(item)
+                    asana_side.ensure_comments(
+                        str(item["asana_gid"]),
+                        desired_asana.comments,
+                    )
+                    tw_side.clear_pending_asana_comments(str(item["uuid"]))
+            finally:
+                progress.advance(task_id)
 
     return len(pending_items)
 
@@ -103,6 +105,16 @@ def resume_pending_asana_comments(
 @opts_asana(hidden_gid=False)
 @opts_tw_filtering()
 @opts_miscellaneous("TW", "Asana")
+@click.option(
+    "--check-comments",
+    is_flag=True,
+    default=False,
+    help=(
+        "Re-read every mapped task's Asana comments before reconciling. "
+        "Normal sync uses the comment cache, which refreshes when a task's "
+        "modified_at changes."
+    ),
+)
 def main(  # noqa: PLR0915, C901, PLR0912
     asana_task_gid: str,
     asana_token: str,
@@ -121,6 +133,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
     custom_combination_savename: str,
     pdb_on_error: bool,
     confirm: bool,
+    check_comments: bool,
 ):
     """Synchronize your tasks in Asana with filters from Taskwarrior."""
     del prefer_scheduled_date
@@ -258,6 +271,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "Asana Workspace Name": asana_workspace_name,
                 "Asana Task GID": asana_task_gid,
                 "Resolution Strategy": resolution_strategy,
+                "Check comments": check_comments,
             },
             prefix="\n\n",
             suffix="\n",
@@ -318,6 +332,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 ("annotations", "end", "entry", "modified", "notes", "urgency"),
             ),
             change_log=change_log,
+            check_comments=check_comments,
         ) as aggregator:
             with console.status(
                 "[bold]Loading Taskwarrior snapshot...[/bold]",

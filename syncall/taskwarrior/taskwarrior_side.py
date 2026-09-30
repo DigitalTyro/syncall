@@ -618,6 +618,7 @@ class TaskWarriorSide(SyncSide):
         used_remote: set[str],
         rebuilt: dict[str, dict[str, str]],
         delete_indices: set[int],
+        trust_remote_absence: bool,
     ) -> None:
         """Reconcile comments that already have durable Asana GID bindings."""
         for gid, binding in bindings.items():
@@ -628,6 +629,15 @@ class TaskWarriorSide(SyncSide):
                 used_annotations,
                 entry,
             )
+
+            if remote is None and not trust_remote_absence:
+                if annotation_index is not None:
+                    used_annotations.add(annotation_index)
+                rebuilt[gid] = {
+                    "e": entry,
+                    "h": binding.get("h", ""),
+                }
+                continue
 
             if remote is None:
                 if annotation_index is not None:
@@ -759,6 +769,8 @@ class TaskWarriorSide(SyncSide):
         item_id: str,
         current_item: Mapping[str, Any],
         remote_comments: Sequence[object],
+        *,
+        trust_remote_absence: bool = True,
     ) -> list[str]:
         """Converge Asana-backed annotations and return genuinely local-only annotations."""
         raw_task = self._load_exported_task(item_id)
@@ -789,6 +801,7 @@ class TaskWarriorSide(SyncSide):
             used_remote=used_remote,
             rebuilt=rebuilt,
             delete_indices=delete_indices,
+            trust_remote_absence=trust_remote_absence,
         )
         self._reconcile_unbound_remote_comments(
             item_id=item_id,

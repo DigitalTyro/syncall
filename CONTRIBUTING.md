@@ -84,6 +84,8 @@ live synchronization data.
   - Start the message header with a verb
   - Capitalise the first word (the verb mentioned above).
   - Format your commit messages in imperative form
+  - Keep the summary to one short line, in the style of the existing history
+  - Do not end the summary with punctuation
   - If the pull-request is referring to a particular `Side`, prefix it with
     `[side-name]`
 
@@ -96,5 +98,5 @@ live synchronization data.
   [gcal] Implement feature A
   # ✅ if this is about a synchronization that's about two sides, join them by
   # a dash...
-  [tw-gcal] Fix regression in Taskwarrior - Google Keep todo blocks integration.
+  [tw-gcal] Fix regression in Taskwarrior - Google Keep todo blocks integration
   ```

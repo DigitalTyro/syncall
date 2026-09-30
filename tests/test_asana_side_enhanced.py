@@ -233,8 +233,10 @@ def test_comment_cache_skips_unchanged_story_fetch(tmp_path) -> None:
 
     assert [str(comment) for comment in first[0].comments] == ["Cached comment"]
     assert first[0].comments[0].gid == "s1"
+    assert side.comment_history_fetched("1")
     assert [str(comment) for comment in second[0].comments] == ["Cached comment"]
     assert second[0].comments[0].gid == "s1"
+    assert not second_side.comment_history_fetched("1")
     second_client.tasks.stories.assert_not_called()
 
 

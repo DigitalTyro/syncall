@@ -92,11 +92,13 @@ Outbound comments are designed to be self-healing and independent of syncall's d
 
 For every mapped task during a normal sync:
 
-- syncall fetches the **live Asana comment history** before normal change detection
-- those live comments replace any cached Asana comment snapshot, so a new Asana comment can itself trigger Asana → Taskwarrior synchronisation
+- syncall reconciles the comments already loaded for that task. The comment cache is refreshed when the task's `modified_at` changes, including when a comment is added or removed
+- `--check-comments` instead re-reads every mapped task's live Asana comment history before reconciliation
+- a cache hit is not treated as proof that a comment was deleted. Deletion is applied when that task's stories were read from Asana on this run, or when `--check-comments` was used
+- comments loaded for the task replace the previous snapshot, so a newly fetched Asana comment can itself trigger Asana → Taskwarrior synchronisation
 - Taskwarrior stores a compact versioned `asana_comment_state` UDA on the task
 - that ledger maps stable Asana comment GIDs to the corresponding Taskwarrior annotation identity (creation timestamp plus a compact text digest)
-- if the ledger is missing, malformed or incomplete, syncall automatically rebuilds as much of it as possible from live Asana GIDs, `created_at` values and normalized comment text
+- if the ledger is missing, malformed or incomplete, syncall automatically rebuilds as much of it as possible from the loaded comment GIDs, `created_at` values and normalized comment text
 - annotations that can be matched to existing Asana comments are treated as already synchronized
 - an unmatched Taskwarrior annotation with a stable creation timestamp is treated as a missing outbound comment and is appended to Asana
 - after appending, syncall fetches live Asana history again and immediately rebuilds the ledger using the real newly-created Asana GID

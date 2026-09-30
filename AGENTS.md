@@ -78,11 +78,13 @@ Taskwarrior may serialize timestamps in UTC, but an Asana `due_on` is a local ca
 
 ## Comment reconciliation requirements
 
-Do not infer outbound comments from serdes/cache alone.
+Do not infer outbound comments from serdes/cache alone. A write still re-reads live Asana stories immediately before posting.
 
-For each mapped task, normal sync should reconcile:
+For each mapped task, normal sync reconciles the comments already loaded for that task. The comment cache is refreshed when the task's `modified_at` changes, which Asana does when a comment is added or removed. `--check-comments` re-reads every mapped task's live comment history instead. A cache hit must not be treated as proof that a comment was deleted.
 
-- live Asana comment GIDs
+Normal reconciliation compares:
+
+- Asana comment GIDs from that loaded or re-read history
 - Asana comment `created_at`
 - normalized text as a secondary guard
 - durable Taskwarrior `asana_comment_state`

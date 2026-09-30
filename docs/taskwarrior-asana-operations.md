@@ -182,6 +182,8 @@ If you delete a duplicate Asana comment that syncall just posted, the next run t
 
 A subsequent no-change run should settle to an actual no-op aside from read/reconciliation work.
 
+`./scripts/sync-work --check-comments` re-reads every mapped task's Asana comment history. Use it when you want to verify the comment cache, for example after editing an existing comment's text. Asana does not move `modified_at` for that edit, so a normal sync will not notice it. A normal sync still refreshes a task's cached comments when `modified_at` changes, and it still re-reads Asana immediately before posting a new comment.
+
 ## Progress UI expectations
 
 A long operation should never look frozen without explanation.

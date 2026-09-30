@@ -74,6 +74,7 @@ class Aggregator:
         ignore_keys: tuple[Sequence[str], Sequence[str]] = (),
         catch_exceptions: bool = True,
         change_log: SyncChangeLog | None = None,
+        check_comments: bool = False,
     ):
         # Preferences manager
         # Sample config path: ~/.config/syncall/taskwarrior_gcal_sync.yaml
@@ -132,11 +133,12 @@ class Aggregator:
         # resolution strategy to resolve conflicts
         self._resolution_strategy = resolution_strategy
         self._plain_converter_B_to_A = converter_B_to_A
-        converter_to_A = (
+        self._plain_converter_to_A = (
             self._convert_existing_tw_to_asana
             if side_A.name == "Asana" and side_B.name == "Tw"
             else converter_B_to_A
         )
+        self._plain_converter_to_B = converter_A_to_B
 
         # item synchronizer -------------------------------------------------------------------
         def side_B_fn(fn):
@@ -157,8 +159,8 @@ class Aggregator:
             updater_to_B=side_B_fn(self.updater_to),
             deleter_to_A=side_A_fn(self.deleter_to),
             deleter_to_B=side_B_fn(self.deleter_to),
-            converter_to_A=converter_to_A,
-            converter_to_B=converter_A_to_B,
+            converter_to_A=self._converting_to_a,
+            converter_to_B=self._converting_to_b,
             item_getter_A=side_A_fn(self.item_getter_for),
             item_getter_B=side_B_fn(self.item_getter_for),
             resolution_strategy=self._resolution_strategy,
@@ -167,6 +169,7 @@ class Aggregator:
         )
 
         self.change_log = change_log
+        self._check_comments = check_comments
         self._items_A: dict[ID, Item] = {}
         self._items_B: dict[ID, Item] = {}
         self._operation_progress = None
@@ -325,12 +328,20 @@ class Aggregator:
                 "Applying sync changes",
                 total=total_operations,
             )
+            sync_finished = False
             try:
                 self._synchronizer.sync(changes_A=changes_A, changes_B=changes_B)
+                sync_finished = True
             finally:
-                self._operation_progress = None
-                self._operation_progress_task = None
-                self.flush_correspondences()
+                try:
+                    if sync_finished:
+                        # Some synchronizer paths never call back into an insert, update,
+                        # delete, or conversion. Close that gap so the bar still finishes.
+                        self._complete_operation_progress()
+                finally:
+                    self._operation_progress = None
+                    self._operation_progress_task = None
+                    self.flush_correspondences()
 
         if self._operation_failed:
             detail = _format_sync_failures(self._operation_errors)
@@ -360,6 +371,15 @@ class Aggregator:
             return None
         return get_comments_live, ensure_comments, reconcile
 
+    @staticmethod
+    def _loaded_comments(asana_item: Item) -> tuple:
+        """Return comments already attached to the loaded Asana task."""
+        if hasattr(asana_item, "comments"):
+            return tuple(asana_item.comments or ())
+        if isinstance(asana_item, dict):
+            return tuple(asana_item.get("comments") or ())
+        return ()
+
     def _store_live_comments(self, asana_id: str, asana_item: Item, live_comments) -> None:
         """Keep the current Asana snapshot aligned with freshly fetched comment history."""
         self._live_asana_comments[asana_id] = live_comments
@@ -383,8 +403,15 @@ class Aggregator:
         if asana_item is None or current_tw is None:
             return
 
-        live_comments = get_comments_live(asana_id)
-        self._store_live_comments(asana_id, asana_item, live_comments)
+        if self._check_comments:
+            live_comments = get_comments_live(asana_id)
+            self._store_live_comments(asana_id, asana_item, live_comments)
+            trust_remote_absence = True
+        else:
+            live_comments = self._loaded_comments(asana_item)
+            self._live_asana_comments[asana_id] = live_comments
+            fetched = getattr(self._side_A, "comment_history_fetched", None)
+            trust_remote_absence = callable(fetched) and fetched(asana_id)
         task_name = task_name_from_item(asana_item) or task_name_from_item(current_tw)
         change_log = getattr(self, "change_log", None)
         comment_context = (
@@ -404,6 +431,7 @@ class Aggregator:
                 asana_item,
                 current_tw,
                 live_comments,
+                trust_remote_absence=trust_remote_absence,
                 get_comments_live=get_comments_live,
                 ensure_comments=ensure_comments,
                 reconcile=reconcile,
@@ -417,11 +445,17 @@ class Aggregator:
         current_tw: Item,
         live_comments,
         *,
+        trust_remote_absence: bool,
         get_comments_live,
         ensure_comments,
         reconcile,
     ) -> None:
-        outbound = reconcile(tw_id, current_tw, live_comments)
+        outbound = reconcile(
+            tw_id,
+            current_tw,
+            live_comments,
+            trust_remote_absence=trust_remote_absence,
+        )
         if not outbound:
             return
 
@@ -434,7 +468,12 @@ class Aggregator:
             raise RuntimeError(
                 f"Taskwarrior task {tw_id} disappeared while checkpointing comments.",
             )
-        remaining = reconcile(tw_id, refreshed_tw, live_comments)
+        remaining = reconcile(
+            tw_id,
+            refreshed_tw,
+            live_comments,
+            trust_remote_absence=True,
+        )
         if remaining:
             raise RuntimeError(
                 f"Taskwarrior task {tw_id} still has unsynchronized comments after "
@@ -448,6 +487,7 @@ class Aggregator:
             return
 
         get_comments_live, ensure_comments, reconcile = functions
+        self._check_comments = getattr(self, "_check_comments", False)
         self._live_asana_comments = {}
         pairs = [
             (str(tw_ref), str(asana_ref)) for tw_ref, asana_ref in self._B_to_A_map.items()
@@ -456,8 +496,11 @@ class Aggregator:
             return
 
         progress = make_progress(console=Console(), unit="tasks")
+        description = (
+            "Checking Asana comments" if self._check_comments else "Reconciling comments"
+        )
         with progress:
-            progress_task = progress.add_task("Reconciling comments", total=len(pairs))
+            progress_task = progress.add_task(description, total=len(pairs))
             for tw_ref, asana_ref in pairs:
                 try:
                     self._sync_one_comment_history(
@@ -514,8 +557,57 @@ class Aggregator:
         return len(changes_A.new) + len(changes_B.new) + touched_operations
 
     def _advance_operation_progress(self) -> None:
-        if self._operation_progress is not None and self._operation_progress_task is not None:
-            self._operation_progress.advance(self._operation_progress_task)
+        progress = getattr(self, "_operation_progress", None)
+        task_id = getattr(self, "_operation_progress_task", None)
+        if progress is None or task_id is None:
+            return
+        task = self._progress_task(progress, task_id)
+        if task is not None and task.total is not None and task.completed >= task.total:
+            return
+        progress.advance(task_id)
+        progress.refresh()
+
+    def _complete_operation_progress(self) -> None:
+        """Advance any counted operations that never reported completion."""
+        progress = self._operation_progress
+        task_id = self._operation_progress_task
+        if progress is None or task_id is None:
+            return
+        task = self._progress_task(progress, task_id)
+        if task is None or task.total is None or task.completed >= task.total:
+            return
+        progress.update(task_id, completed=task.total, refresh=True)
+
+    def _converting_to_a(self, item: Item) -> Item | None:
+        """Convert an item before writing it to the other side."""
+        return self._count_skipped_conversion(self._plain_converter_to_A, item)
+
+    def _converting_to_b(self, item: Item) -> Item | None:
+        """Convert an item before writing it to the other side."""
+        return self._count_skipped_conversion(self._plain_converter_to_B, item)
+
+    @staticmethod
+    def _progress_task(progress: object, task_id: object) -> object | None:
+        for task in getattr(progress, "tasks", ()):
+            if task.id == task_id:
+                return task
+        return None
+
+    def _count_skipped_conversion(self, converter: ConverterFn, item: Item) -> Item | None:
+        """Count a conversion that will not reach an insert or update.
+
+        item_synchronizer does not call the writer when conversion returns None or raises,
+        and its own wrapper swallows the exception. Those operations were still included in
+        the progress total, so the bar stopped short of 100%.
+        """
+        try:
+            converted = converter(item)
+        except Exception:
+            self._advance_operation_progress()
+            raise
+        if converted is None:
+            self._advance_operation_progress()
+        return converted
 
     def _record_operation_failure(
         self,
@@ -544,13 +636,7 @@ class Aggregator:
         tw_id = str(tw_item.get("uuid") or "")
         if not tw_id or tw_id not in self._B_to_A_map:
             return converted
-        limited = self._limit_asana_update_to_tw_changes(tw_id, converted)
-        if limited is None:
-            # item_synchronizer skips the updater when the converter returns None, so count
-            # this as a finished no-op operation or the progress bar never reaches 100%.
-            self._advance_operation_progress()
-            return None
-        return limited
+        return self._limit_asana_update_to_tw_changes(tw_id, converted)
 
     def _limit_asana_update_to_tw_changes(self, tw_id: str, converted: Item) -> Item | None:
         """Keep live Asana values for fields Taskwarrior did not actually change."""
@@ -794,7 +880,6 @@ class Aggregator:
             logger.debug(f'Pickling newly created {helper} item -> "{item_created_id}"')
             pickle_dump(item_created, serdes_dir / item_created_id)
             self._written_serdes.add((helper.name, item_created_id))
-            self._advance_operation_progress()
         except Exception as exc:
             self._record_operation_failure(helper, "Create", exc)
             if created_id is None:
@@ -821,6 +906,8 @@ class Aggregator:
                     note="The task was created, then a later step failed.",
                 )
             raise
+        finally:
+            self._advance_operation_progress()
 
         return item_created_id
 
@@ -862,7 +949,6 @@ class Aggregator:
                 after=current_target,
                 requested=item,
             )
-            self._advance_operation_progress()
         except Exception as exc:
             self._record_operation_failure(helper, "Update", exc)
             observed = None
@@ -889,6 +975,8 @@ class Aggregator:
                 note="Stored state below is whatever could be read back after the error.",
             )
             raise
+        finally:
+            self._advance_operation_progress()
 
     def deleter_to(self, item_id: ID, helper: SideHelper):
         """Delete an item using the given side helper."""
@@ -907,7 +995,6 @@ class Aggregator:
                 after=None,
                 requested=None,
             )
-            self._advance_operation_progress()
         except Exception as exc:
             self._record_operation_failure(helper, "Delete", exc)
             self._log_stored_change(
@@ -921,6 +1008,8 @@ class Aggregator:
                 error=exc,
             )
             raise
+        finally:
+            self._advance_operation_progress()
 
     def _snapshot_for_log(self, side: SyncSide, item_id: ID) -> Item | None:
         """Read the stored item before a write so the log can show a real diff."""

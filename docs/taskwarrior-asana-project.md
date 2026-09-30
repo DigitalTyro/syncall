@@ -213,7 +213,7 @@ Users do not need to manually configure it for syncall to operate.
 
 `asana_comment_state` is an internal versioned Taskwarrior UDA. It binds Asana comment GIDs to the local annotation identity used for reconciliation.
 
-Normal sync should self-heal this state from live Asana history.
+Normal sync should self-heal this state from the loaded Asana comment history. `--check-comments` re-reads that history live for every mapped task.
 
 ### Pending creation recovery
 
@@ -236,6 +236,7 @@ In particular:
 - deleting/corrupting `asana_comments.json` must not create duplicate comments
 - cached comments never authorize an outbound comment write
 - live Asana state is rechecked when a write decision needs remote truth
+- `./scripts/sync-work --check-comments` re-reads every mapped task's comments. Normal sync does not
 
 ### Process concurrency
 

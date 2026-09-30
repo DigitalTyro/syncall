@@ -470,9 +470,53 @@ def test_deleted_remote_comment_tombstone_prevents_resurrection() -> None:
             },
         ],
     }
-    side, _, _ = _side_with_export(raw_task)
+    side, _, imported = _side_with_export(raw_task)
 
     assert side.reconcile_asana_comment_state("tw-1", raw_task, []) == []
+    assert imported[0]["annotations"] == []
+
+
+def test_cached_comment_absence_does_not_drop_local_annotation() -> None:
+    raw_task = {
+        "uuid": "tw-1",
+        "description": "Task",
+        "status": "pending",
+        "asana_comment_state": json.dumps(
+            {
+                "version": 1,
+                "bindings": {
+                    "story-1": {
+                        "e": "20240105T091500Z",
+                        "h": TaskWarriorSide._annotation_text_digest("Still remote"),
+                    },
+                },
+            },
+        ),
+        "annotations": [
+            {
+                "entry": "20240105T091500Z",
+                "description": "Still remote",
+            },
+        ],
+    }
+    side, _, imported = _side_with_export(raw_task)
+
+    assert (
+        side.reconcile_asana_comment_state(
+            "tw-1",
+            raw_task,
+            [],
+            trust_remote_absence=False,
+        )
+        == []
+    )
+    assert imported[0]["annotations"] == [
+        {
+            "entry": "20240105T091500Z",
+            "description": "Still remote",
+        },
+    ]
+    assert "story-1" in json.loads(imported[0]["asana_comment_state"])["bindings"]
 
 
 def test_backslash_variant_annotation_binds_to_existing_asana_comment() -> None:

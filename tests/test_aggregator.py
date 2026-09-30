@@ -5,6 +5,7 @@ import pytest
 from bidict import bidict
 from item_synchronizer.types import ID
 from syncall.aggregator import Aggregator
+from syncall.progress import make_progress
 from syncall.sync_side import ItemType, SyncSide
 
 
@@ -480,6 +481,7 @@ def test_failed_update_checkpoints_actual_target_for_safe_retry(tmp_path) -> Non
     side.get_item.assert_called_once_with("a1", use_cached=False)
     assert aggregator._operation_failed is True
     assert ("Asana", "a1") in aggregator._written_serdes
+    aggregator._advance_operation_progress.assert_called_once()
 
 
 def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
@@ -507,8 +509,65 @@ def test_successful_update_caches_actual_readback_state(tmp_path) -> None:
         )
 
     side.get_item.assert_called_once_with("tw-1", use_cached=False)
+    aggregator._advance_operation_progress.assert_called_once()
     pickle_dump_mock.assert_called_once_with(actual, tmp_path / "tw-1")
     assert ("Tw", "tw-1") in aggregator._written_serdes
+
+
+def test_skipped_conversion_counts_as_a_finished_operation() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    aggregator._advance_operation_progress = MagicMock()
+
+    assert aggregator._count_skipped_conversion(lambda _item: None, {"gid": "a1"}) is None
+
+    aggregator._advance_operation_progress.assert_called_once()
+
+
+def test_successful_conversion_is_counted_by_the_following_write() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    aggregator._advance_operation_progress = MagicMock()
+
+    assert aggregator._count_skipped_conversion(
+        lambda _item: {"uuid": "tw-1"}, {"gid": "a1"}
+    ) == {
+        "uuid": "tw-1",
+    }
+
+    aggregator._advance_operation_progress.assert_not_called()
+
+
+def test_applying_sync_changes_reaches_the_counted_total(tmp_path, monkeypatch) -> None:
+    aggregator = _minimal_sync_aggregator(tmp_path)
+    changes_a = MagicMock()
+    changes_a.new = set()
+    changes_a.modified = set()
+    changes_a.deleted = set()
+    changes_b = MagicMock()
+    changes_b.new = set()
+    changes_b.modified = set()
+    changes_b.deleted = set()
+    aggregator.detect_changes = MagicMock(side_effect=[changes_a, changes_b])
+    aggregator._count_sync_operations = MagicMock(return_value=12)
+    captured: dict[str, object] = {}
+
+    def fake_make_progress(*, console, unit):
+        progress = make_progress(console=console, unit=unit)
+        progress.disable = True
+        captured["progress"] = progress
+        return progress
+
+    def one_tick(**_kwargs) -> None:
+        aggregator._advance_operation_progress()
+
+    aggregator._synchronizer.sync.side_effect = one_tick
+    monkeypatch.setattr("syncall.aggregator.make_progress", fake_make_progress)
+
+    aggregator.sync()
+
+    progress = captured["progress"]
+    task = progress.tasks[0]
+    assert task.completed == 12
+    assert task.total == 12
 
 
 def test_sync_comment_histories_backfills_missed_local_comment() -> None:
@@ -549,6 +608,7 @@ def test_sync_comment_histories_backfills_missed_local_comment() -> None:
     aggregator._items_A = {"asana-1": asana_item}
     aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
     aggregator._live_asana_comments = {}
+    aggregator._check_comments = True
 
     aggregator._sync_comment_histories()
 
@@ -586,6 +646,7 @@ def test_sync_comment_histories_imports_remote_comment_without_generic_cache() -
     aggregator._items_A = {"asana-1": asana_item}
     aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
     aggregator._live_asana_comments = {}
+    aggregator._check_comments = True
 
     aggregator._sync_comment_histories()
 
@@ -593,6 +654,7 @@ def test_sync_comment_histories_imports_remote_comment_without_generic_cache() -
         "tw-1",
         aggregator._items_B["tw-1"],
         ("New remote comment",),
+        trust_remote_absence=True,
     )
     asana_side.ensure_comments.assert_not_called()
     assert asana_item.comments == ("New remote comment",)
@@ -656,3 +718,76 @@ def test_comment_sync_does_not_use_serdes_or_global_baseline() -> None:
     aggregator._sync_comment_histories()
 
     tw_side.reconcile_asana_comment_state.assert_called_once()
+    asana_side.get_comments_live.assert_not_called()
+
+
+def test_default_comment_sync_uses_loaded_comments_without_rereading_asana() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.name = "Asana"
+    helper_B = MagicMock()
+    helper_B.name = "Tw"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
+
+    asana_item = MagicMock()
+    asana_item.comments = ("Cached comment",)
+    asana_side = MagicMock()
+    asana_side.comment_history_fetched.return_value = False
+    tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.return_value = []
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = asana_side
+    aggregator._side_B = tw_side
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": asana_item}
+    aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
+    aggregator._live_asana_comments = {}
+
+    aggregator._sync_comment_histories()
+
+    asana_side.get_comments_live.assert_not_called()
+    tw_side.reconcile_asana_comment_state.assert_called_once_with(
+        "tw-1",
+        aggregator._items_B["tw-1"],
+        ("Cached comment",),
+        trust_remote_absence=False,
+    )
+
+
+def test_fresh_story_fetch_allows_comment_deletion_without_full_reread() -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_A.name = "Asana"
+    helper_B = MagicMock()
+    helper_B.name = "Tw"
+    helper_A.other = helper_B
+    helper_B.other = helper_A
+
+    asana_item = MagicMock()
+    asana_item.comments = ()
+    asana_side = MagicMock()
+    asana_side.comment_history_fetched.return_value = True
+    tw_side = MagicMock()
+    tw_side.reconcile_asana_comment_state.return_value = []
+
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = asana_side
+    aggregator._side_B = tw_side
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": asana_item}
+    aggregator._items_B = {"tw-1": {"uuid": "tw-1"}}
+    aggregator._live_asana_comments = {}
+
+    aggregator._sync_comment_histories()
+
+    asana_side.get_comments_live.assert_not_called()
+    tw_side.reconcile_asana_comment_state.assert_called_once_with(
+        "tw-1",
+        aggregator._items_B["tw-1"],
+        (),
+        trust_remote_absence=True,
+    )

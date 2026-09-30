@@ -60,7 +60,7 @@ For existing mapped tasks:
 
 Taskwarrior stores durable per-task comment reconciliation state in the internal `asana_comment_state` UDA.
 
-This state is designed to self-heal from live Asana history if local caches/preferences are missing or stale.
+This state is designed to self-heal from the loaded Asana comment history if local sync preferences are missing or stale. `./scripts/sync-work --check-comments` re-reads every mapped task's live comments; a normal sync does not.
 
 ## Identity and deletion safety
 

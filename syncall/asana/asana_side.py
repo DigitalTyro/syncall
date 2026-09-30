@@ -48,6 +48,7 @@ class AsanaSide(SyncSide):
         self._comment_cache_path = comment_cache_path
         self._comment_cache = self._load_comment_cache()
         self._comment_cache_dirty = False
+        self._fetched_comment_histories: set[str] = set()
         self.change_log = None
 
         super().__init__(name="Asana", fullname="Asana")
@@ -194,7 +195,12 @@ class AsanaSide(SyncSide):
             text = story.get("text")
             if is_comment and text:
                 comments.append(AsanaComment.from_raw(story))
+        self._fetched_comment_histories.add(str(item_id))
         return tuple(comments)
+
+    def comment_history_fetched(self, item_id: AsanaGID) -> bool:
+        """Return whether this process read this task's stories from Asana."""
+        return str(item_id) in self._fetched_comment_histories
 
     def _get_cached_comments(self, raw_task: dict) -> tuple[AsanaComment, ...]:
         item_id = str(raw_task["gid"])

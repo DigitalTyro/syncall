@@ -702,3 +702,101 @@ def test_bound_comment_does_not_capture_new_same_text_annotation() -> None:
     ]
 
     assert side.reconcile_asana_comment_state("tw-1", raw_task, remote) == ["Same text"]
+
+
+def _indexed_side(tasks: list[dict]) -> tuple[TaskWarriorSide, MagicMock]:
+    side = TaskWarriorSide.__new__(TaskWarriorSide)
+    tw = MagicMock()
+    tw._execute.return_value = ("", "")
+    side._tw = tw
+    side._tags = {"asana"}
+    side._tw_filter = ""
+    side._project = ""
+    side._items_cache = {}
+    side._reload_items = False
+    side._export_index = None
+    side._export_index_loaded = False
+    tw._get_json.return_value = tasks
+    return side, tw
+
+
+def test_comment_reconciliation_exports_the_taskwarrior_filter_once() -> None:
+    task_a = {"uuid": "tw-1", "description": "A", "status": "pending", "annotations": []}
+    task_b = {"uuid": "tw-2", "description": "B", "status": "pending", "annotations": []}
+    side, tw = _indexed_side([task_a, task_b])
+
+    side.reconcile_asana_comment_state("tw-1", task_a, [])
+    side.reconcile_asana_comment_state("tw-2", task_b, [])
+
+    tw._get_json.assert_called_once_with("( +asana )", "export")
+
+
+def test_written_task_is_exported_again_before_the_next_reconciliation() -> None:
+    original = {"uuid": "tw-1", "description": "A", "status": "pending", "annotations": []}
+    fresh = {
+        "uuid": "tw-1",
+        "description": "A",
+        "status": "pending",
+        "annotations": [
+            {
+                "entry": "20240101T000000Z",
+                "description": "from taskwarrior",
+            },
+        ],
+    }
+    side, tw = _indexed_side([original])
+
+    def export(*args):
+        if args == ("( +asana )", "export"):
+            return [original]
+        assert args == ("tw-1", "export")
+        return [fresh]
+
+    tw._get_json.side_effect = export
+
+    assert side.reconcile_asana_comment_state("tw-1", original, []) == []
+    assert side.reconcile_asana_comment_state("tw-1", fresh, []) == ["from taskwarrior"]
+    assert tw._get_json.call_args_list[1].args == ("tw-1", "export")
+
+
+def test_export_index_is_not_changed_by_an_in_memory_edit() -> None:
+    task = {"uuid": "tw-1", "description": "A", "status": "pending", "annotations": []}
+    side, tw = _indexed_side([task])
+
+    loaded = side._load_exported_task("tw-1")
+    assert loaded is not None
+    loaded["annotations"].append({"entry": "20240101T000000Z", "description": "mutated"})
+
+    again = side._load_exported_task("tw-1")
+    assert again is not None
+    assert again["annotations"] == []
+    tw._get_json.assert_called_once_with("( +asana )", "export")
+
+
+def test_bulk_export_failure_reads_each_task_directly() -> None:
+    task_a = {"uuid": "tw-1", "description": "A", "status": "pending", "annotations": []}
+    task_b = {"uuid": "tw-2", "description": "B", "status": "pending", "annotations": []}
+    side, tw = _indexed_side([task_a, task_b])
+
+    def export(*args):
+        if args[0] == "( +asana )":
+            raise OSError("task export failed")
+        return [task_a if args[0] == "tw-1" else task_b]
+
+    tw._get_json.side_effect = export
+
+    side.reconcile_asana_comment_state("tw-1", task_a, [])
+    side.reconcile_asana_comment_state("tw-2", task_b, [])
+
+    assert tw._get_json.call_args_list[0].args == ("( +asana )", "export")
+    assert tw._get_json.call_args_list[1].args == ("tw-1", "export")
+    assert tw._get_json.call_args_list[2].args == ("tw-2", "export")
+
+
+def test_incomplete_taskwarrior_side_still_exports_one_task() -> None:
+    raw_task = {"uuid": "tw-1", "description": "A", "status": "pending", "annotations": []}
+    side, tw, _ = _side_with_export(raw_task)
+
+    side.reconcile_asana_comment_state("tw-1", raw_task, [])
+
+    tw._get_json.assert_called_once_with("tw-1", "export")

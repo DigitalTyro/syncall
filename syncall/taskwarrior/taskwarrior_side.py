@@ -164,6 +164,8 @@ class TaskWarriorSide(SyncSide):
 
         self._items_cache: dict[str, TaskwarriorRawItem] = {}
         self._reload_items = True
+        self._export_index: dict[str, dict[str, Any]] | None = None
+        self._export_index_loaded = False
 
     def start(self):
         logger.info(f"Initializing {self.fullname}...")
@@ -426,6 +428,7 @@ class TaskWarriorSide(SyncSide):
         if cached is not None:
             cached["annotations"] = annotations_list  # type: ignore[literal-required]
             cached[tw_asana_comment_state_key] = serialized  # type: ignore[literal-required]
+        self._invalidate_exported_task(item_id)
         self._reload_items = True
         self._log_annotation_reconciliation(
             item_id,
@@ -844,10 +847,59 @@ class TaskWarriorSide(SyncSide):
         return self._repair_annotation_timestamps(item_id, desired_with_dates)
 
     def _load_exported_task(self, item_id: str) -> dict[str, Any] | None:
+        """Return one task's export record.
+
+        The first read exports the current Taskwarrior filter once and reuses those
+        records. A task missing from that snapshot, or written since it was taken, is
+        exported on its own.
+        """
+        indexed = self._exported_task_from_index(item_id)
+        if indexed is not None:
+            return indexed
+        return self._export_single_task(item_id)
+
+    def _exported_task_from_index(self, item_id: str) -> dict[str, Any] | None:
+        if not getattr(self, "_export_index_loaded", False) and hasattr(self, "_tags"):
+            self._load_export_index()
+        index = getattr(self, "_export_index", None) or {}
+        raw_task = index.get(str(item_id))
+        if raw_task is None:
+            return None
+        return copy.deepcopy(raw_task)
+
+    def _load_export_index(self) -> None:
+        self._export_index_loaded = True
+        self._export_index = {}
+        try:
+            raw_tasks = self._tw._get_json(self._filter_string(), "export")
+        except (OSError, TaskwarriorError, ValueError):
+            logger.opt(exception=True).warning(
+                "Could not export Taskwarrior tasks in bulk; reading tasks individually.",
+            )
+            return
+        if isinstance(raw_tasks, dict):
+            raw_tasks = [raw_tasks]
+        if not isinstance(raw_tasks, list):
+            return
+        for raw_task in raw_tasks:
+            if isinstance(raw_task, dict) and raw_task.get("uuid"):
+                self._export_index[str(raw_task["uuid"])] = raw_task
+
+    def _export_single_task(self, item_id: str) -> dict[str, Any] | None:
         raw_export = self._tw._get_json(item_id, "export")
         if isinstance(raw_export, list):
-            return raw_export[0] if raw_export else None
-        return raw_export
+            raw_task = raw_export[0] if raw_export else None
+        else:
+            raw_task = raw_export
+        index = getattr(self, "_export_index", None)
+        if isinstance(raw_task, dict) and index is not None:
+            index[str(item_id)] = copy.deepcopy(raw_task)
+        return raw_task
+
+    def _invalidate_exported_task(self, item_id: str) -> None:
+        index = getattr(self, "_export_index", None)
+        if index is not None:
+            index.pop(str(item_id), None)
 
     def _group_desired_annotations(
         self,
@@ -958,6 +1010,7 @@ class TaskWarriorSide(SyncSide):
             handle.flush()
             self._tw._execute("import", handle.name)
 
+        self._invalidate_exported_task(item_id)
         self._reload_items = True
         logger.debug(
             f"Repaired {repaired} annotation timestamp(s) on Taskwarrior task {item_id}.",

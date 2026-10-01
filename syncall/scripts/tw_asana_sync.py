@@ -115,6 +115,15 @@ def resume_pending_asana_comments(
         "modified_at changes."
     ),
 )
+@click.option(
+    "--check-descriptions",
+    is_flag=True,
+    default=False,
+    help=(
+        "Download every Asana task description during discovery. "
+        "Normal sync reuses a description while the task's modified_at is unchanged."
+    ),
+)
 def main(  # noqa: PLR0915, C901, PLR0912
     asana_task_gid: str,
     asana_token: str,
@@ -134,6 +143,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
     pdb_on_error: bool,
     confirm: bool,
     check_comments: bool,
+    check_descriptions: bool,
 ):
     """Synchronize your tasks in Asana with filters from Taskwarrior."""
     del prefer_scheduled_date
@@ -272,6 +282,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                 "Asana Task GID": asana_task_gid,
                 "Resolution Strategy": resolution_strategy,
                 "Check comments": check_comments,
+                "Check descriptions": check_descriptions,
             },
             prefix="\n\n",
             suffix="\n",
@@ -292,6 +303,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
         task_gid=asana_task_gid,
         workspace_gid=asana_workspace_gid,
         comment_cache_path=xdg_config_home() / "syncall" / "asana_comments.json",
+        check_descriptions=check_descriptions,
     )
 
     # teardown function and exception handling ------------------------------------------------

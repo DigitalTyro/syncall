@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from syncall.asana.asana_side import AsanaSide
+from syncall.asana.asana_side import NOTE_MISS_FETCH_LIMIT, AsanaSide
 from syncall.asana.asana_task import AsanaComment, AsanaTask
 
 
@@ -71,6 +71,163 @@ def test_task_discovery_combines_assigned_and_follower_only_tasks() -> None:
         ],
         page_size=100,
     )
+
+
+def test_unchanged_description_is_reused_without_downloading_html_notes(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+
+    first = side._get_task_summaries()
+
+    assert first[0]["html_notes"] == "<body><strong>Short note</strong></body>"
+    assert "html_notes" in client.tasks.find_all.call_args.kwargs["fields"]
+
+    second_client = MagicMock()
+    second_side = AsanaSide(
+        client=second_client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    listed = _raw_task("1")
+    del listed["html_notes"]
+    second_client.tasks.find_all.return_value = [listed]
+    second_client.tasks.search_in_workspace.return_value = []
+
+    second = second_side._get_task_summaries()
+
+    assert second[0]["html_notes"] == "<body><strong>Short note</strong></body>"
+    assert "html_notes" not in second_client.tasks.find_all.call_args.kwargs["fields"]
+    second_client.tasks.find_by_id.assert_not_called()
+
+
+def test_check_descriptions_downloads_every_description(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1")]
+    client.tasks.search_in_workspace.return_value = []
+    side._get_task_summaries()
+
+    second_client = MagicMock()
+    second_side = AsanaSide(
+        client=second_client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+        check_descriptions=True,
+    )
+    refreshed = _raw_task("1")
+    refreshed["html_notes"] = "<body>Fresh from Asana</body>"
+    second_client.tasks.find_all.return_value = [refreshed]
+    second_client.tasks.search_in_workspace.return_value = []
+
+    tasks = second_side._get_task_summaries()
+
+    assert tasks[0]["html_notes"] == "<body>Fresh from Asana</body>"
+    assert "html_notes" in second_client.tasks.find_all.call_args.kwargs["fields"]
+    second_client.tasks.find_by_id.assert_not_called()
+
+
+def test_changed_description_is_downloaded_for_that_task_only(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task("1"), _raw_task("2", name="Other")]
+    client.tasks.search_in_workspace.return_value = []
+    side._get_task_summaries()
+
+    second_client = MagicMock()
+    second_side = AsanaSide(
+        client=second_client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    unchanged = _raw_task("1")
+    del unchanged["html_notes"]
+    changed = _raw_task("2", name="Other")
+    changed["modified_at"] = "2026-09-21T12:30:00Z"
+    del changed["html_notes"]
+    second_client.tasks.find_all.return_value = [unchanged, changed]
+    second_client.tasks.search_in_workspace.return_value = []
+    second_client.tasks.find_by_id.return_value = {
+        "gid": "2",
+        "modified_at": changed["modified_at"],
+        "html_notes": "<body>Updated</body>",
+    }
+
+    tasks = {task["gid"]: task for task in second_side._get_task_summaries()}
+
+    assert tasks["1"]["html_notes"] == "<body><strong>Short note</strong></body>"
+    assert tasks["2"]["html_notes"] == "<body>Updated</body>"
+    second_client.tasks.find_by_id.assert_called_once_with(
+        "2",
+        fields=["gid", "html_notes", "modified_at"],
+    )
+
+
+def test_many_description_changes_refresh_with_one_full_listing(tmp_path) -> None:
+    cache_path = tmp_path / "comments.json"
+    count = NOTE_MISS_FETCH_LIMIT + 1
+    client = MagicMock()
+    side = AsanaSide(
+        client=client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    client.tasks.find_all.return_value = [_raw_task(str(index)) for index in range(count)]
+    client.tasks.search_in_workspace.return_value = []
+    side._get_task_summaries()
+
+    second_client = MagicMock()
+    second_side = AsanaSide(
+        client=second_client,
+        task_gid=None,
+        workspace_gid="workspace-1",
+        comment_cache_path=cache_path,
+    )
+    light = []
+    full = []
+    for index in range(count):
+        task = _raw_task(str(index))
+        task["modified_at"] = "2026-09-21T12:30:00Z"
+        task["html_notes"] = f"<body>{index}</body>"
+        full.append(dict(task))
+        light.append({key: value for key, value in task.items() if key != "html_notes"})
+
+    def find_all(**kwargs):
+        if "html_notes" in kwargs["fields"]:
+            return full
+        return light
+
+    second_client.tasks.find_all.side_effect = find_all
+    second_client.tasks.search_in_workspace.return_value = []
+
+    tasks = second_side._get_task_summaries()
+
+    assert tasks[0]["html_notes"] == "<body>0</body>"
+    assert second_client.tasks.find_all.call_count == 2
+    second_client.tasks.find_by_id.assert_not_called()
 
 
 def test_get_item_fetches_rich_notes_and_comment_stories() -> None:

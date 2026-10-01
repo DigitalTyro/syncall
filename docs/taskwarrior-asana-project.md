@@ -237,6 +237,7 @@ In particular:
 - cached comments never authorize an outbound comment write
 - live Asana state is rechecked when a write decision needs remote truth
 - `./scripts/sync-work --check-comments` re-reads every mapped task's comments. Normal sync does not
+- `./scripts/sync-work --check-descriptions` downloads every Asana description. Normal sync reuses one while `modified_at` is unchanged
 
 ### Process concurrency
 

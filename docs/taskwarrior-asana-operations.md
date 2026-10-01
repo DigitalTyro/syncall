@@ -44,6 +44,7 @@ Do not casually delete these while troubleshooting:
 - syncall preferences/configuration/correspondence state
 - syncall serdes snapshots
 - `asana_comments.json`
+- `asana_task_notes.json`
 - repository `.env`
 
 On this macOS setup, syncall preferences are normally under:
@@ -52,7 +53,7 @@ On this macOS setup, syncall preferences are normally under:
 ~/Library/Preferences/syncall/
 ```
 
-The comment cache is not authoritative, but preserving it during an incident makes diagnosis easier.
+The comment cache and `asana_task_notes.json` are not authoritative. The notes file only stores Asana descriptions already downloaded for an unchanged `modified_at`, so discovery does not download every rich description on later runs. Deleting either file does not change what sync is allowed to write. Preserving them during an incident makes diagnosis easier and keeps the next discovery from repeating that download.
 
 ## Internal Taskwarrior UDAs
 
@@ -183,6 +184,8 @@ If you delete a duplicate Asana comment that syncall just posted, the next run t
 A subsequent no-change run should settle to an actual no-op aside from read/reconciliation work.
 
 `./scripts/sync-work --check-comments` re-reads every mapped task's Asana comment history. Use it when you want to verify the comment cache, for example after editing an existing comment's text. Asana does not move `modified_at` for that edit, so a normal sync will not notice it. A normal sync still refreshes a task's cached comments when `modified_at` changes, and it still re-reads Asana immediately before posting a new comment.
+
+`./scripts/sync-work --check-descriptions` downloads every Asana description during discovery and refreshes `asana_task_notes.json`. Normal sync reuses a stored description while that task's `modified_at` is unchanged. The two flags can be used together.
 
 ## Progress UI expectations
 

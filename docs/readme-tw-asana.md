@@ -27,7 +27,7 @@ For the full project design and roadmap, see:
 | `html_notes` | `notes` | Asana → TW projection for existing tasks |
 | comments | annotations | Asana → TW + append-only genuinely new TW annotations → Asana |
 
-The workspace sync includes tasks assigned to the authenticated user as well as follower-only tasks. Follower discovery uses Asana workspace search and manual pagination so result sets larger than 100 tasks are not silently truncated.
+The workspace sync includes tasks assigned to the authenticated user as well as follower-only tasks. Follower discovery uses Asana workspace search and manual pagination so result sets larger than 100 tasks are not silently truncated. After the first discovery, unchanged rich descriptions are reused while a task's `modified_at` stays the same. A description edit still downloads that task because Asana moves `modified_at` when the description changes. `./scripts/sync-work --check-descriptions` downloads every description anyway.
 
 ## Rich descriptions: important safety rule
 

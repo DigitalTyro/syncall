@@ -18,6 +18,10 @@ from syncall.types import AsanaGID
 GET_TASKS_PAGE_SIZE = 100
 COMMENT_CACHE_MAX_AGE = datetime.timedelta(days=30)
 COMMENT_CACHE_VERSION = 3
+NOTES_CACHE_VERSION = 1
+# A handful of changed descriptions can be read individually. A larger set is cheaper
+# to refresh with one full listing than with one request per task.
+NOTE_MISS_FETCH_LIMIT = 25
 TASK_FIELDS = [
     "completed",
     "completed_at",
@@ -29,6 +33,7 @@ TASK_FIELDS = [
     "modified_at",
     "name",
 ]
+TASK_SUMMARY_FIELDS = [field for field in TASK_FIELDS if field != "html_notes"]
 STORY_FIELDS = ["created_at", "gid", "html_text", "resource_subtype", "text", "type"]
 
 
@@ -41,13 +46,22 @@ class AsanaSide(SyncSide):
         task_gid: AsanaGID,
         workspace_gid: AsanaGID,
         comment_cache_path: Path | None = None,
+        check_descriptions: bool = False,
     ):
         self._client = client
         self._task_gid = task_gid
         self._workspace_gid = workspace_gid
+        self._check_descriptions = check_descriptions
         self._comment_cache_path = comment_cache_path
+        self._notes_cache_path = (
+            comment_cache_path.with_name("asana_task_notes.json")
+            if comment_cache_path is not None
+            else None
+        )
         self._comment_cache = self._load_comment_cache()
         self._comment_cache_dirty = False
+        self._notes_cache = self._load_notes_cache()
+        self._notes_cache_dirty = False
         self._fetched_comment_histories: set[str] = set()
         self.change_log = None
 
@@ -58,6 +72,7 @@ class AsanaSide(SyncSide):
 
     def finish(self):
         self._save_comment_cache()
+        self._save_notes_cache()
 
     def _load_comment_cache(self) -> dict[str, dict]:
         if self._comment_cache_path is None or not self._comment_cache_path.is_file():
@@ -89,7 +104,116 @@ class AsanaSide(SyncSide):
         temp_path.replace(self._comment_cache_path)
         self._comment_cache_dirty = False
 
-    def _get_follower_task_summaries(self) -> list[dict]:
+    def _load_notes_cache(self) -> dict[str, dict[str, str]]:
+        """Load description bodies cached from an earlier discovery.
+
+        The cache is keyed by the task's ``modified_at``. It only avoids downloading
+        unchanged rich descriptions. It is never used to decide a write.
+        """
+        if self._notes_cache_path is None or not self._notes_cache_path.is_file():
+            return {}
+
+        try:
+            cache = json.loads(self._notes_cache_path.read_text())
+        except (OSError, ValueError):
+            logger.warning(
+                f"Could not read Asana description cache at {self._notes_cache_path}; "
+                "descriptions will be downloaded again.",
+            )
+            return {}
+
+        if not isinstance(cache, dict) or cache.get("version") != NOTES_CACHE_VERSION:
+            return {}
+        tasks = cache.get("tasks")
+        if not isinstance(tasks, dict):
+            return {}
+
+        valid: dict[str, dict[str, str]] = {}
+        for gid, entry in tasks.items():
+            if not isinstance(entry, dict) or "html_notes" not in entry:
+                continue
+            valid[str(gid)] = {
+                "modified_at": str(entry.get("modified_at") or ""),
+                "html_notes": str(entry.get("html_notes") or "<body></body>"),
+            }
+        return valid
+
+    def _save_notes_cache(self) -> None:
+        if self._notes_cache_path is None or not self._notes_cache_dirty:
+            return
+
+        self._notes_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self._notes_cache_path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(
+                {"version": NOTES_CACHE_VERSION, "tasks": self._notes_cache},
+                ensure_ascii=False,
+            ),
+        )
+        temp_path.replace(self._notes_cache_path)
+        self._notes_cache_dirty = False
+
+    def _remember_notes(self, tasks: Sequence[dict]) -> None:
+        if self._notes_cache_path is None:
+            return
+        self._notes_cache = {
+            str(task["gid"]): {
+                "modified_at": str(task.get("modified_at") or ""),
+                "html_notes": str(task.get("html_notes") or "<body></body>"),
+            }
+            for task in tasks
+            if task.get("gid")
+        }
+        self._notes_cache_dirty = True
+
+    def _drop_unseen_notes(self, tasks: Sequence[dict]) -> None:
+        if self._notes_cache_path is None:
+            return
+        live = {str(task.get("gid")) for task in tasks if task.get("gid")}
+        stale = [gid for gid in self._notes_cache if gid not in live]
+        if not stale:
+            return
+        for gid in stale:
+            del self._notes_cache[gid]
+        self._notes_cache_dirty = True
+
+    def _restore_cached_notes(self, tasks: list[dict]) -> list[dict]:
+        misses: list[dict] = []
+        for task in tasks:
+            cached = self._notes_cache.get(str(task.get("gid") or ""))
+            modified_at = str(task.get("modified_at") or "")
+            if cached is not None and cached.get("modified_at") == modified_at:
+                task["html_notes"] = cached["html_notes"]
+            else:
+                misses.append(task)
+
+        if not misses:
+            return tasks
+        if len(misses) > NOTE_MISS_FETCH_LIMIT:
+            logger.info(
+                f"Refreshing Asana descriptions for {len(misses)} changed tasks.",
+            )
+            refreshed = self._fetch_discovered_tasks(TASK_FIELDS)
+            self._remember_notes(refreshed)
+            return refreshed
+
+        for task in misses:
+            detailed = self._client.tasks.find_by_id(
+                task["gid"],
+                fields=["gid", "html_notes", "modified_at"],
+            )
+            task["html_notes"] = detailed.get("html_notes") or "<body></body>"
+            self._notes_cache[str(task["gid"])] = {
+                "modified_at": str(task.get("modified_at") or ""),
+                "html_notes": str(task["html_notes"]),
+            }
+        self._notes_cache_dirty = True
+        return tasks
+
+    def _get_follower_task_summaries(
+        self,
+        fields: Sequence[str] | None = None,
+    ) -> list[dict]:
         """Fetch all follower-only tasks using Asana search's manual pagination."""
         results: list[dict] = []
         created_after = None
@@ -108,7 +232,7 @@ class AsanaSide(SyncSide):
                 self._client.tasks.search_in_workspace(
                     self._workspace_gid,
                     params=params,
-                    fields=TASK_FIELDS,
+                    fields=list(fields or TASK_FIELDS),
                     page_size=GET_TASKS_PAGE_SIZE,
                 ),
             )
@@ -126,19 +250,18 @@ class AsanaSide(SyncSide):
 
         return results
 
-    def _get_task_summaries(self) -> list[dict]:
+    def _fetch_discovered_tasks(self, fields: Sequence[str]) -> list[dict]:
         """Return assigned tasks plus follower-only tasks, deduplicated by GID."""
         assigned = self._client.tasks.find_all(
             assignee="me",
             workspace=self._workspace_gid,
-            fields=TASK_FIELDS,
+            fields=list(fields),
             page_size=GET_TASKS_PAGE_SIZE,
         )
-
         by_gid = {str(task["gid"]): task for task in assigned}
 
         try:
-            followed = self._get_follower_task_summaries()
+            followed = self._get_follower_task_summaries(fields)
             for task in followed:
                 by_gid[str(task["gid"])] = task
         except asana.error.PremiumOnlyError as exc:
@@ -148,13 +271,31 @@ class AsanaSide(SyncSide):
 
         return list(by_gid.values())
 
+    def _get_task_summaries(self) -> list[dict]:
+        """Return the discovered task set, reusing unchanged rich descriptions."""
+        if self._notes_cache and not self._check_descriptions:
+            tasks = self._restore_cached_notes(
+                self._fetch_discovered_tasks(TASK_SUMMARY_FIELDS),
+            )
+        else:
+            tasks = self._fetch_discovered_tasks(TASK_FIELDS)
+            self._remember_notes(tasks)
+        self._drop_unseen_notes(tasks)
+        self._save_notes_cache()
+        return tasks
+
     def get_all_items(self, **kwargs) -> Sequence[AsanaTask]:
         del kwargs
         results = []
 
         if self._task_gid is None:
             console = Console()
-            with console.status("[bold]Discovering Asana tasks...[/bold]", spinner="dots"):
+            discovery_label = (
+                "[bold]Discovering Asana tasks and descriptions...[/bold]"
+                if self._check_descriptions
+                else "[bold]Discovering Asana tasks...[/bold]"
+            )
+            with console.status(discovery_label, spinner="dots"):
                 raw_tasks = self._get_task_summaries()
 
             total = len(raw_tasks)

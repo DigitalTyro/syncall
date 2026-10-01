@@ -17,6 +17,18 @@ echo "==> Ensuring Rich UI dependency is installed"
 "$PYTHON" -m pip install 'rich>=13.7,<15'
 
 echo "==> Installing current syncall code into .venv"
+"$PYTHON" - <<'PY'
+import shutil
+import sysconfig
+from pathlib import Path
+
+site = Path(sysconfig.get_path("purelib"))
+for dist in site.glob("syncall-*.dist-info"):
+    if (dist / "RECORD").is_file() and (dist / "METADATA").is_file():
+        continue
+    print(f"Removing broken package metadata {dist.name}")
+    shutil.rmtree(dist)
+PY
 "$PYTHON" -m pip install --upgrade --force-reinstall --no-deps .
 
 echo "==> Checking dependencies"

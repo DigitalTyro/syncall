@@ -80,6 +80,43 @@ class TextChange:
     identity: str | None = None
 
 
+@dataclass(frozen=True)
+class CommentActivity:
+    """One comment or annotation text change to show after a sync run."""
+
+    direction: str
+    kind: str
+    result: str
+    task_name: str | None
+    text: str
+
+
+_COMMENT_ACTIVITY_KINDS = (
+    "comment added",
+    "comment amended",
+    "comment removed",
+    "annotation added",
+    "annotation amended",
+    "annotation removed",
+)
+_COMMENT_ACTIVITY_LABELS = (
+    (TO_ASANA, "comment added", "Asana comments added"),
+    (TO_ASANA, "comment amended", "Asana comments edited"),
+    (TO_ASANA, "comment removed", "Asana comments removed"),
+    (TO_TASKWARRIOR, "annotation added", "Taskwarrior annotations added"),
+    (TO_TASKWARRIOR, "annotation amended", "Taskwarrior annotations edited"),
+    (TO_TASKWARRIOR, "annotation removed", "Taskwarrior annotations removed"),
+)
+_COMMENT_ACTIVITY_ACTIONS = {
+    "comment added": "added to Asana",
+    "comment amended": "edited on Asana",
+    "comment removed": "removed from Asana",
+    "annotation added": "added on Taskwarrior",
+    "annotation amended": "edited on Taskwarrior",
+    "annotation removed": "removed from Taskwarrior",
+}
+
+
 class SyncChangeLog:
     """Write one append-only plain-text log for each sync direction."""
 
@@ -97,6 +134,7 @@ class SyncChangeLog:
             TO_TASKWARRIOR: Counter(),
         }
         self._context = TaskContext()
+        self._comment_activity: list[CommentActivity] = []
         self._finished = False
         for direction, path in self._paths.items():
             self._append(path, self._header(direction), required=True)
@@ -146,6 +184,14 @@ class SyncChangeLog:
         asana_gid = asana_gid or self._context.asana_gid
         task_name = task_name or self._context.task_name
         self._counts[direction][f"{operation} {result}"] += 1
+        self._remember_comment_activity(
+            direction=direction,
+            operation=operation,
+            result=result,
+            task_name=task_name,
+            texts=texts,
+            note=note,
+        )
         self._append(
             self._paths[direction],
             _format_record(
@@ -159,6 +205,46 @@ class SyncChangeLog:
                 texts=texts,
                 note=note,
                 error=error,
+            ),
+        )
+
+    def comment_activity(self) -> tuple[CommentActivity, ...]:
+        """Return comment and annotation text changes recorded during this run."""
+        return tuple(self._comment_activity)
+
+    def _remember_comment_activity(
+        self,
+        *,
+        direction: str,
+        operation: str,
+        result: str,
+        task_name: str | None,
+        texts: Sequence[TextChange],
+        note: str | None,
+    ) -> None:
+        changes = [text for text in texts if text.kind in _COMMENT_ACTIVITY_KINDS]
+        if changes:
+            self._comment_activity.extend(
+                CommentActivity(
+                    direction=direction,
+                    kind=text.kind,
+                    result=result,
+                    task_name=task_name,
+                    text=text.after or text.before or "",
+                )
+                for text in changes
+            )
+            return
+        if operation not in _COMMENT_ACTIVITY_KINDS:
+            return
+        attempted = (note or "").removeprefix("Attempted comment: ")
+        self._comment_activity.append(
+            CommentActivity(
+                direction=direction,
+                kind=operation,
+                result=result,
+                task_name=task_name,
+                text=attempted,
             ),
         )
 
@@ -299,6 +385,46 @@ def _format_record(
     if texts:
         lines.extend(_format_text(change) for change in texts)
     return "\n".join(lines)
+
+
+def format_comment_activity(events: Sequence[CommentActivity]) -> str:
+    """Render the end-of-run comment summary, including explicit zero counts."""
+    lines = ["Comment changes"]
+    for direction, kind, label in _COMMENT_ACTIVITY_LABELS:
+        succeeded = sum(
+            1
+            for event in events
+            if event.direction == direction
+            and event.kind == kind
+            and event.result == "succeeded"
+        )
+        failed = sum(
+            1
+            for event in events
+            if event.direction == direction
+            and event.kind == kind
+            and event.result != "succeeded"
+        )
+        line = f"  {label}: {succeeded}"
+        if failed:
+            line += f" ({failed} failed)"
+        lines.append(line)
+    if events:
+        lines.append("")
+        for event in events:
+            task_name = event.task_name or "(unknown task)"
+            action = _COMMENT_ACTIVITY_ACTIONS.get(event.kind, event.kind)
+            if event.result != "succeeded":
+                action += " failed"
+            lines.append(f"  {task_name} — {action}: {_comment_preview(event.text)}")
+    return "\n".join(lines)
+
+
+def _comment_preview(text: str, limit: int = 160) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1] + "…"
 
 
 def _format_footer(counts: Counter[str], finished_at: datetime.datetime, failed: bool) -> str:

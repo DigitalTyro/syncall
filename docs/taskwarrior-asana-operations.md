@@ -84,7 +84,7 @@ These files are for review only. Sync does not read them when deciding what to w
 
 `html_notes` before/after lines ignore volatile Asana image URL signatures. If two descriptions differ only in `e=` / `t=` tokens, that is not a logged change.
 
-The console `Items updated` summary is counted by the generic synchronizer only when the Asana converter still has a real field to write. Comment identity repair is local bookkeeping and should not inflate that number.
+The console `Items updated` summary is counted by the generic synchronizer only when the Asana converter still has a real field to write. A new annotation posted as an Asana comment does not increase that number. Every run prints a separate `Comment changes` summary afterwards, with counts for Asana comments and Taskwarrior annotations added, edited, or removed. Comment identity repair is local bookkeeping and appears in neither summary.
 
 If a run writes more than expected, stop, keep these logs, and use `audit-asana-window` as well before changing anything.
 
@@ -203,19 +203,11 @@ Expected visible stages include:
 
 If a stage is slow and has no visible status, treat that as a UX bug.
 
-## Known cosmetic Taskwarrior warning
+## Taskwarrior theme include
 
-`taskw-ng` may print a traceback when parsing a Taskwarrior line such as:
+Taskwarrior's own config often contains `include default.theme`. The `task` command finds that file, but `taskw-ng` does not search Homebrew's theme directory. Before opening Taskwarrior, sync sets `TASK_RCDIR` from the installed `task` prefix when that variable is unset.
 
-```text
-include default.theme
-```
-
-if it cannot resolve `default.theme` from the locations it checks.
-
-Historically this warning has been noisy but non-fatal: sync can continue after it.
-
-Do not confuse this parser warning with sync database corruption. It is still worth cleaning up separately so real errors are easier to see.
+If the theme directory still cannot be found, `taskw-ng` logs a non-fatal traceback and sync continues. That warning is a config-path problem, not sync database corruption.
 
 ## Incident procedure
 

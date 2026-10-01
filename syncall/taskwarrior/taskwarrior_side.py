@@ -4,6 +4,8 @@ import copy
 import datetime
 import hashlib
 import json
+import os
+import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -29,6 +31,45 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from syncall.types import TaskwarriorRawItem
+
+
+def ensure_task_rc_include_dir() -> None:
+    """Let taskw-ng find Taskwarrior themes installed outside its default search path.
+
+    `include default.theme` is resolved by Taskwarrior itself, but taskw-ng only looks
+    in the working directory, beside the taskrc, and under `/usr` and `/usr/local`.
+    Homebrew keeps the themes in its own prefix, so the include logs a traceback unless
+    `TASK_RCDIR` points there.
+    """
+    if os.environ.get("TASK_RCDIR"):
+        return
+    include_dir = _discover_task_rc_include_dir()
+    if include_dir is not None:
+        os.environ["TASK_RCDIR"] = str(include_dir)
+
+
+def _discover_task_rc_include_dir() -> Path | None:
+    candidates: list[Path] = []
+    task_bin = shutil.which("task")
+    if task_bin:
+        binary = Path(task_bin)
+        candidates.extend(
+            base / "share" / "doc" / "task" / "rc"
+            for base in (binary.parent.parent, binary.resolve().parent.parent)
+        )
+    candidates.extend(
+        Path(prefix) / "share" / "doc" / "task" / "rc"
+        for prefix in ("/opt/homebrew", "/opt/local", "/usr/local", "/usr")
+    )
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if (candidate / "default.theme").is_file():
+            return candidate
+    return None
+
 
 tw_duration_key = "syncallduration"
 tw_client_key = "client"
@@ -155,6 +196,7 @@ class TaskWarriorSide(SyncSide):
                 f" {', '.join([str(p) for p in candidate_config_files])}",
             )
         logger.debug(f"Initializing Taskwarrior instance using config file: {config_file}")
+        ensure_task_rc_include_dir()
 
         self._tw = TaskWarrior(
             marshal=True,

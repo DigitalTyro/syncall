@@ -12,7 +12,9 @@ from syncall.change_log import (
     TO_ASANA,
     TO_TASKWARRIOR,
     SyncChangeLog,
+    TextChange,
     diff_stored_items,
+    format_comment_activity,
     task_name_from_item,
 )
 from syncall.taskwarrior.taskwarrior_side import TaskWarriorSide
@@ -291,3 +293,51 @@ def test_taskwarrior_identity_backfill_is_logged_as_bookkeeping(tmp_path) -> Non
     assert "https://app.asana.com/0/0/asana-9" in log
     assert "Asana task content was not changed" in log
     assert "identity stored" not in change_log.path_for(TO_ASANA).read_text()
+
+
+def test_comment_activity_summary_lists_text_changes_and_zero_counts(tmp_path) -> None:
+    change_log = SyncChangeLog(tmp_path)
+    change_log.record(
+        direction=TO_ASANA,
+        operation="comment added",
+        result="succeeded",
+        task_name="[Color Wow] Migrate blog content",
+        texts=(TextChange("comment added", after="Trent mentioned the image sizes."),),
+    )
+    change_log.record(
+        direction=TO_TASKWARRIOR,
+        operation="comment identity repaired",
+        result="succeeded",
+        task_name="[Color Wow] Migrate blog content",
+        fields=(),
+        note="Rebound comment identities. Annotation text was not changed.",
+    )
+    change_log.record(
+        direction=TO_ASANA,
+        operation="comment added",
+        result="failed",
+        task_name="[Spectrum] Speed up video load times",
+        note="Attempted comment: This post did not land.",
+        error="RuntimeError: rejected",
+    )
+
+    report = format_comment_activity(change_log.comment_activity())
+
+    assert "Asana comments added: 1 (1 failed)" in report
+    assert "Asana comments edited: 0" in report
+    assert "Asana comments removed: 0" in report
+    assert "Taskwarrior annotations added: 0" in report
+    assert "Taskwarrior annotations edited: 0" in report
+    assert "Taskwarrior annotations removed: 0" in report
+    assert "[Color Wow] Migrate blog content — added to Asana: Trent mentioned" in report
+    assert "added to Asana failed: This post did not land." in report
+    assert "identity" not in report
+
+
+def test_empty_comment_activity_summary_shows_zeros() -> None:
+    report = format_comment_activity(())
+
+    assert report.startswith("Comment changes\n")
+    assert "Asana comments added: 0" in report
+    assert "Taskwarrior annotations removed: 0" in report
+    assert "—" not in report

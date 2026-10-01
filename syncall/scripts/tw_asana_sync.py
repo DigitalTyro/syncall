@@ -36,7 +36,7 @@ from syncall.app_utils import (
     get_resolution_strategy,
     register_teardown_handler,
 )
-from syncall.change_log import SyncChangeLog, task_name_from_item
+from syncall.change_log import SyncChangeLog, format_comment_activity, task_name_from_item
 from syncall.cli import opts_asana, opts_miscellaneous, opts_tw_filtering
 from syncall.progress import make_progress
 from syncall.tw_asana_utils import convert_asana_to_tw, convert_tw_to_asana
@@ -413,6 +413,7 @@ def main(  # noqa: PLR0915, C901, PLR0912
                     "Taskwarrior task(s).",
                 )
     finally:
+        console.print(format_comment_activity(change_log.comment_activity()), markup=False)
         change_log.finish(failed=sys.exc_info()[0] is not None)
         sync_lock.close()
 

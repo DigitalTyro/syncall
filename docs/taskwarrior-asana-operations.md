@@ -85,7 +85,7 @@ These files are for review only. Sync does not read them when deciding what to w
 
 `html_notes` before/after lines ignore volatile Asana image URL signatures. If two descriptions differ only in `e=` / `t=` tokens, that is not a logged change.
 
-The console `Items updated` summary is counted by the generic synchronizer only when the Asana converter still has a real field to write. A new annotation posted as an Asana comment does not increase that number. Every run prints a separate `Comment changes` summary afterwards, with counts for Asana comments and Taskwarrior annotations added, edited, or removed. Comment identity repair is local bookkeeping and appears in neither summary.
+The console `Items created`, `Items updated`, and `Items deleted` summary is printed after the run's writes. It counts every successful task create, update, or delete, and every successful comment or annotation add, edit, or removal, on the side that changed. A stored Asana completion applied to Taskwarrior counts as a Taskwarrior update. Skipped no-ops, failed writes, and comment-identity bookkeeping do not. The `Comment changes` lines below it name the comment and annotation text.
 
 If a run writes more than expected, stop, keep these logs, and use `audit-asana-window` as well before changing anything.
 

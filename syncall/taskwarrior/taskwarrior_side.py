@@ -1283,6 +1283,35 @@ class TaskWarriorSide(SyncSide):
     def last_modification_key(cls) -> str:
         return cls.LAST_MODIFICATION_KEY
 
+    @staticmethod
+    def _ignored_or_matching_annotations(
+        item1: dict,
+        item2: dict,
+        ignore_keys: Sequence[str],
+    ) -> bool:
+        """Return whether annotations are ignored or equal.
+
+        Empty and missing annotation lists are the same. The lists are removed so the
+        generic comparison does not inspect them again.
+        """
+        if "annotations" in ignore_keys:
+            return True
+        if "annotations" in item1 and "annotations" in item2:
+            if [str(value) for value in item1["annotations"]] != [
+                str(value) for value in item2["annotations"]
+            ]:
+                return False
+            item1.pop("annotations")
+            item2.pop("annotations")
+            return True
+        if "annotations" in item1 and item1["annotations"] != []:
+            return False
+        if "annotations" in item2 and item2["annotations"] != []:
+            return False
+        item1.pop("annotations", None)
+        item2.pop("annotations", None)
+        return True
+
     @classmethod
     def items_are_identical(
         cls,
@@ -1309,21 +1338,10 @@ class TaskWarriorSide(SyncSide):
             if k not in ignore_keys
         ]
 
-        if "annotations" in item1 and "annotations" in item2:
-            if [str(value) for value in item1["annotations"]] != [
-                str(value) for value in item2["annotations"]
-            ]:
-                return False
-            item1.pop("annotations")
-            item2.pop("annotations")
-        elif "annotations" in item1 and "annotations" not in item2:
-            if item1["annotations"] != []:
-                return False
-            item1.pop("annotations")
-        elif "annotations" in item2 and "annotations" not in item1:
-            if item2["annotations"] != []:
-                return False
-            item2.pop("annotations")
+        # Annotations are a separate comment projection. When the caller ignores
+        # them, an imported comment must not look like an edit to the task.
+        if not cls._ignored_or_matching_annotations(item1, item2, ignore_keys):
+            return False
 
         for item in (item1, item2):
             if "uuid" in item:

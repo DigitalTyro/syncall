@@ -800,3 +800,28 @@ def test_incomplete_taskwarrior_side_still_exports_one_task() -> None:
     side.reconcile_asana_comment_state("tw-1", raw_task, [])
 
     tw._get_json.assert_called_once_with("tw-1", "export")
+
+
+def test_ignored_annotations_do_not_count_as_taskwarrior_edits() -> None:
+    before = {
+        "uuid": "tw-1",
+        "description": "Consolidate collections",
+        "status": "pending",
+        "annotations": [],
+    }
+    with_comment = {
+        **before,
+        "annotations": [
+            {"entry": "20260925T085346Z", "description": "Redirected the collection"}
+        ],
+    }
+
+    assert TaskWarriorSide.items_are_identical(
+        before, with_comment, ignore_keys=["annotations"]
+    )
+    assert not TaskWarriorSide.items_are_identical(before, with_comment)
+    assert not TaskWarriorSide.items_are_identical(
+        before,
+        {**with_comment, "status": "completed"},
+        ignore_keys=["annotations"],
+    )

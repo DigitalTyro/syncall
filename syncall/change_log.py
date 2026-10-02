@@ -71,6 +71,15 @@ class FieldChange:
 
 
 @dataclass(frozen=True)
+class ItemCounts:
+    """Successful creates, updates, and deletes shown in the end-of-run summary."""
+
+    created: int = 0
+    updated: int = 0
+    deleted: int = 0
+
+
+@dataclass(frozen=True)
 class TextChange:
     """A comment or annotation that was added, amended, or removed."""
 
@@ -115,6 +124,17 @@ _COMMENT_ACTIVITY_ACTIONS = {
     "annotation amended": "edited on Taskwarrior",
     "annotation removed": "removed from Taskwarrior",
 }
+_ITEM_COUNT_BUCKETS = {
+    "created": "created",
+    "updated": "updated",
+    "deleted": "deleted",
+    "comment added": "updated",
+    "comment amended": "updated",
+    "comment removed": "updated",
+    "annotation added": "updated",
+    "annotation amended": "updated",
+    "annotation removed": "updated",
+}
 
 
 class SyncChangeLog:
@@ -132,6 +152,10 @@ class SyncChangeLog:
         self._counts: dict[str, Counter[str]] = {
             TO_ASANA: Counter(),
             TO_TASKWARRIOR: Counter(),
+        }
+        self._item_counts = {
+            TO_ASANA: {"created": 0, "updated": 0, "deleted": 0},
+            TO_TASKWARRIOR: {"created": 0, "updated": 0, "deleted": 0},
         }
         self._context = TaskContext()
         self._comment_activity: list[CommentActivity] = []
@@ -184,6 +208,10 @@ class SyncChangeLog:
         asana_gid = asana_gid or self._context.asana_gid
         task_name = task_name or self._context.task_name
         self._counts[direction][f"{operation} {result}"] += 1
+        if result == "succeeded":
+            bucket = _ITEM_COUNT_BUCKETS.get(operation)
+            if bucket is not None and direction in self._item_counts:
+                self._item_counts[direction][bucket] += 1
         self._remember_comment_activity(
             direction=direction,
             operation=operation,
@@ -211,6 +239,17 @@ class SyncChangeLog:
     def comment_activity(self) -> tuple[CommentActivity, ...]:
         """Return comment and annotation text changes recorded during this run."""
         return tuple(self._comment_activity)
+
+    def item_counts(self) -> dict[str, ItemCounts]:
+        """Return successful content writes, excluding identity bookkeeping and failures."""
+        return {
+            direction: ItemCounts(
+                created=counts["created"],
+                updated=counts["updated"],
+                deleted=counts["deleted"],
+            )
+            for direction, counts in self._item_counts.items()
+        }
 
     def _remember_comment_activity(
         self,
@@ -385,6 +424,28 @@ def _format_record(
     if texts:
         lines.extend(_format_text(change) for change in texts)
     return "\n".join(lines)
+
+
+def format_item_counts(
+    counts: Mapping[str, ItemCounts] | None,
+    *,
+    asana_title: str = "Asana",
+    taskwarrior_title: str = "Taskwarrior",
+) -> str:
+    """Render the Asana and Taskwarrior created/updated/deleted summary."""
+    asana = ItemCounts() if counts is None else counts.get(TO_ASANA, ItemCounts())
+    taskwarrior = ItemCounts() if counts is None else counts.get(TO_TASKWARRIOR, ItemCounts())
+    return f"{_format_side_counts(asana_title, asana)}\n{_format_side_counts(taskwarrior_title, taskwarrior)}"
+
+
+def _format_side_counts(title: str, counts: ItemCounts) -> str:
+    return (
+        f"{title}\n"
+        f"{'-' * len(title)}\n"
+        f"\t* Items created: {counts.created}\n"
+        f"\t* Items updated: {counts.updated}\n"
+        f"\t* Items deleted: {counts.deleted}\n"
+    )
 
 
 def format_comment_activity(events: Sequence[CommentActivity]) -> str:

@@ -11,10 +11,12 @@ from syncall.asana.asana_task import AsanaComment, AsanaTask
 from syncall.change_log import (
     TO_ASANA,
     TO_TASKWARRIOR,
+    FieldChange,
     SyncChangeLog,
     TextChange,
     diff_stored_items,
     format_comment_activity,
+    format_item_counts,
     task_name_from_item,
 )
 from syncall.taskwarrior.taskwarrior_side import TaskWarriorSide
@@ -341,3 +343,64 @@ def test_empty_comment_activity_summary_shows_zeros() -> None:
     assert "Asana comments added: 0" in report
     assert "Taskwarrior annotations removed: 0" in report
     assert "—" not in report
+
+
+def test_item_counts_include_every_successful_content_write(tmp_path) -> None:
+    change_log = SyncChangeLog(tmp_path)
+    change_log.record(
+        direction=TO_TASKWARRIOR,
+        operation="updated",
+        result="succeeded",
+        task_name="[Juice] Consolidate duplicate power bank collections",
+        fields=(FieldChange("status", before="pending", after="completed"),),
+    )
+    change_log.record(
+        direction=TO_ASANA,
+        operation="comment added",
+        result="succeeded",
+        task_name="[Color Wow] Migrate blog content",
+        texts=(TextChange("comment added", after="Trent mentioned the image sizes."),),
+    )
+    change_log.record(
+        direction=TO_ASANA,
+        operation="created",
+        result="succeeded",
+        task_name="New task",
+    )
+    change_log.record(
+        direction=TO_TASKWARRIOR,
+        operation="deleted",
+        result="succeeded",
+        task_name="Old task",
+    )
+    change_log.record(
+        direction=TO_TASKWARRIOR,
+        operation="comment identity repaired",
+        result="succeeded",
+        task_name="Bookkeeping only",
+    )
+    change_log.record(
+        direction=TO_ASANA,
+        operation="comment added",
+        result="failed",
+        task_name="Rejected",
+        note="Attempted comment: nope",
+        error="RuntimeError: rejected",
+    )
+    change_log.record(
+        direction=TO_ASANA,
+        operation="updated",
+        result="succeeded",
+        task_name="No-op",
+    )
+
+    counts = change_log.item_counts()
+    assert counts[TO_ASANA].created == 1
+    assert counts[TO_ASANA].updated == 1
+    assert counts[TO_ASANA].deleted == 0
+    assert counts[TO_TASKWARRIOR].created == 0
+    assert counts[TO_TASKWARRIOR].updated == 1
+    assert counts[TO_TASKWARRIOR].deleted == 1
+    report = format_item_counts(counts)
+    assert "\t* Items updated: 1\n" in report
+    assert report.index("Asana") < report.index("Taskwarrior")

@@ -16,6 +16,11 @@ from syncall.tw_asana_utils import comment_text_match_keys, normalize_comment_te
 from syncall.types import AsanaGID
 
 GET_TASKS_PAGE_SIZE = 100
+# The assignee task list returns incomplete tasks unless this is set. Asana then
+# returns those incomplete tasks plus tasks completed since this instant. A date
+# from before Asana existed keeps every assigned completion in discovery. Tasks
+# that are only unassigned stay out of this query.
+ASSIGNED_TASKS_COMPLETED_SINCE = "2000-01-01T00:00:00.000Z"
 COMMENT_CACHE_MAX_AGE = datetime.timedelta(days=30)
 COMMENT_CACHE_VERSION = 3
 NOTES_CACHE_VERSION = 1
@@ -214,7 +219,11 @@ class AsanaSide(SyncSide):
         self,
         fields: Sequence[str] | None = None,
     ) -> list[dict]:
-        """Fetch all follower-only tasks using Asana search's manual pagination."""
+        """Fetch all follower-only tasks using Asana search's manual pagination.
+
+        Search returns both complete and incomplete tasks when ``completed`` is
+        omitted. Assigned tasks are not in this query.
+        """
         results: list[dict] = []
         created_after = None
 
@@ -255,6 +264,7 @@ class AsanaSide(SyncSide):
         assigned = self._client.tasks.find_all(
             assignee="me",
             workspace=self._workspace_gid,
+            completed_since=ASSIGNED_TASKS_COMPLETED_SINCE,
             fields=list(fields),
             page_size=GET_TASKS_PAGE_SIZE,
         )

@@ -1,6 +1,6 @@
 # Taskwarrior ↔ Asana work-sync project
 
-_Last updated: 24 September 2026_
+_Last updated: 2 October 2026_
 
 ## Purpose
 
@@ -25,7 +25,7 @@ The main personal profile is the saved `work` combination.
 Typical characteristics:
 
 - Taskwarrior sync scope is the `+asana` population.
-- Asana discovery includes tasks assigned to the authenticated user **and** follower-only tasks, across both complete and incomplete work.
+- Asana discovery includes tasks assigned to the authenticated user **and** follower-only tasks, across both complete and incomplete work. The assignee listing includes tasks completed since 2000, because that Asana API otherwise returns incomplete tasks only. A task that is merely unassigned or unfollowed stays outside the set and is not deleted.
 - The working dataset is large: roughly 2,700–2,800 mapped tasks, so whole-workspace operations must remain efficient and visibly progressive.
 - The current whole-task conflict strategy is `MostRecentRS`, but field-specific features such as notes/comments must not blindly inherit whole-task recency semantics.
 - Taskwarrior tasks without `+asana` are personal/local and must not be pushed into Asana by the work sync.
@@ -64,6 +64,8 @@ The sync should preserve the useful overlap between both systems:
 | comments | annotations | Asana → TW, plus append-only genuinely new TW annotations → Asana |
 
 Historical dates matter. Imports should not turn old Asana tasks/comments into apparently new Taskwarrior activity merely because the sync ran today.
+
+An imported Asana comment is not a Taskwarrior edit. If a saved snapshot already records Asana as completed and Taskwarrior as pending, and the Taskwarrior status has not changed since that snapshot, the next sync completes the Taskwarrior task and sets `end` from Asana `completed_at`. That repair writes Taskwarrior only.
 
 ### 2. Asana rich text is canonical for existing tasks
 
@@ -155,7 +157,7 @@ Required behaviour:
 - checkpoint that actual state, not merely the intended payload
 - failed writes must not advance source sync state
 - a rerun after a successful sync should converge to a no-op
-- the terminal `Items updated` count is the number of Asana updater calls that still had a real field to write; skipped no-ops must not inflate it
+- the terminal `Items created`, `Items updated`, and `Items deleted` counts include every successful task create, update, or delete, and every successful comment or annotation add, edit, or removal. A stored Asana completion applied to Taskwarrior counts as a Taskwarrior update. Skipped no-ops, failed writes, and comment-identity bookkeeping do not increment them. The summary is printed after those writes, not before.
 
 This is both a correctness and auditability requirement: even a harmless same-value Asana PUT advances `modified_at` and creates noise.
 

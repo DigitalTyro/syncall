@@ -37,6 +37,7 @@ def test_task_discovery_combines_assigned_and_follower_only_tasks() -> None:
     client.tasks.find_all.assert_called_once_with(
         assignee="me",
         workspace="workspace-1",
+        completed_since="2000-01-01T00:00:00.000Z",
         fields=[
             "completed",
             "completed_at",

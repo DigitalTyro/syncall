@@ -1,8 +1,11 @@
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 from bidict import bidict
+from bubop import pickle_dump, pickle_load
+from item_synchronizer.helpers import SideChanges
 from item_synchronizer.types import ID
 from syncall.aggregator import Aggregator
 from syncall.progress import make_progress
@@ -791,3 +794,126 @@ def test_fresh_story_fetch_allows_comment_deletion_without_full_reread() -> None
         (),
         trust_remote_absence=True,
     )
+
+
+def _completion_aggregator(tmp_path, *, asana_item: dict, tw_item: dict):
+    aggregator = Aggregator.__new__(Aggregator)
+    helper_A = MagicMock()
+    helper_B = MagicMock()
+    helper_A.other = helper_B
+    helper_B.other = helper_A
+    asana_dir = tmp_path / "asana"
+    tw_dir = tmp_path / "tw"
+    asana_dir.mkdir()
+    tw_dir.mkdir()
+    pickle_dump(asana_item, asana_dir / "asana-1")
+    pickle_dump(tw_item, tw_dir / "tw-1")
+    aggregator._helper_A = helper_A
+    aggregator._helper_B = helper_B
+    aggregator._side_A = MagicMock()
+    aggregator._side_B = MagicMock()
+    aggregator._B_to_A_map = bidict({"tw-1": "asana-1"})
+    aggregator._items_A = {"asana-1": asana_item}
+    aggregator._items_B = {"tw-1": tw_item}
+    aggregator._baselined_item_ids = {}
+    aggregator._get_serdes_dirs = MagicMock(return_value=(asana_dir, tw_dir))
+    aggregator.change_log = None
+    return aggregator, asana_dir, tw_dir
+
+
+def _pending_completion_pair():
+    completed_at = datetime(2026, 9, 25, 8, 53, 55, tzinfo=UTC)
+    asana_item = {
+        "gid": "asana-1",
+        "name": "[Juice] Consolidate duplicate power bank collections",
+        "completed": True,
+        "completed_at": completed_at,
+    }
+    tw_item = {
+        "uuid": "tw-1",
+        "description": "Consolidate duplicate power bank collections",
+        "status": "pending",
+        "end": None,
+    }
+    return completed_at, asana_item, tw_item
+
+
+def test_stored_completion_repair_uses_asana_completion_time(tmp_path) -> None:
+    completed_at, asana_item, tw_item = _pending_completion_pair()
+    aggregator, _asana_dir, tw_dir = _completion_aggregator(
+        tmp_path,
+        asana_item=asana_item,
+        tw_item=tw_item,
+    )
+    stored = {**tw_item, "status": "completed", "end": completed_at}
+    aggregator._side_B.get_item.return_value = stored
+
+    repairs = aggregator._stored_completion_repairs(SideChanges(), SideChanges())
+    aggregator._apply_stored_completion_repairs(repairs)
+
+    assert repairs == [("tw-1", "asana-1")]
+    aggregator._side_B.update_item.assert_called_once_with(
+        "tw-1",
+        status="completed",
+        end=completed_at,
+    )
+    aggregator._side_A.update_item.assert_not_called()
+    assert pickle_load(tw_dir / "tw-1")["status"] == "completed"
+    assert pickle_load(tw_dir / "tw-1")["end"] == completed_at
+    assert aggregator._items_B["tw-1"]["status"] == "completed"
+
+
+def test_stored_completion_repair_leaves_real_status_edits_alone(tmp_path) -> None:
+    _completed_at, asana_item, tw_item = _pending_completion_pair()
+    aggregator, _asana_dir, _tw_dir = _completion_aggregator(
+        tmp_path,
+        asana_item=asana_item,
+        tw_item=tw_item,
+    )
+
+    assert (
+        aggregator._stored_completion_repairs(SideChanges(), SideChanges(modified={"tw-1"}))
+        == []
+    )
+    aggregator._items_A.clear()
+    assert aggregator._stored_completion_repairs(SideChanges(), SideChanges()) == []
+
+
+def test_stored_completion_repair_skips_a_snapshot_created_this_run(tmp_path) -> None:
+    _completed_at, asana_item, tw_item = _pending_completion_pair()
+    aggregator, _asana_dir, _tw_dir = _completion_aggregator(
+        tmp_path,
+        asana_item=asana_item,
+        tw_item=tw_item,
+    )
+    aggregator._baselined_item_ids = {id(aggregator._helper_A): {"asana-1"}}
+
+    assert aggregator._stored_completion_repairs(SideChanges(), SideChanges()) == []
+
+
+def test_stored_completion_repair_requires_asana_completion_time(tmp_path) -> None:
+    _completed_at, asana_item, tw_item = _pending_completion_pair()
+    asana_item["completed_at"] = None
+    aggregator, _asana_dir, _tw_dir = _completion_aggregator(
+        tmp_path,
+        asana_item=asana_item,
+        tw_item=tw_item,
+    )
+
+    assert aggregator._stored_completion_repairs(SideChanges(), SideChanges()) == []
+    aggregator._side_B.update_item.assert_not_called()
+
+
+def test_missing_snapshot_is_baselined_without_a_change(tmp_path) -> None:
+    aggregator = Aggregator.__new__(Aggregator)
+    helper = MagicMock()
+    aggregator._get_serdes_dirs = MagicMock(return_value=(tmp_path, tmp_path))
+    aggregator._get_ids_map = MagicMock(return_value={"1": "other"})
+    aggregator._get_side_instances = MagicMock(return_value=(MagicMock(), MagicMock()))
+    aggregator._item_has_update = MagicMock(return_value=True)
+
+    changes = aggregator.detect_changes(helper, {"1": {"id": "1", "status": "pending"}})
+
+    assert changes.modified == set()
+    assert aggregator._baselined_item_ids[id(helper)] == {"1"}
+    aggregator._item_has_update.assert_not_called()

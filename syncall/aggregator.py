@@ -32,6 +32,7 @@ from syncall.change_log import (
     SyncChangeLog,
     created_item_changes,
     diff_stored_items,
+    format_item_counts,
     task_name_from_item,
 )
 from syncall.progress import make_progress
@@ -53,6 +54,18 @@ def _format_sync_failures(errors: list[BaseException]) -> str:
         if text:
             parts.append(text)
     return " ".join(parts)
+
+
+class _ItemSynchronizer(Synchronizer):
+    """Synchronize items without printing counts before later writes finish.
+
+    The library prints its summary at the end of ``sync``. Comment writes happen
+    before that, and stored completion repairs happen after it, so the summary has
+    to wait until every write in the run is finished.
+    """
+
+    def sync(self, changes_A: SideChanges, changes_B: SideChanges):
+        return self._sync(changes_A=changes_A, changes_B=changes_B)
 
 
 class Aggregator:
@@ -151,7 +164,7 @@ class Aggregator:
             wrapped.__doc__ = f"{self._helper_A} {fn.__doc__}"
             return wrapped
 
-        self._synchronizer = Synchronizer(
+        self._synchronizer = _ItemSynchronizer(
             A_to_B=self._B_to_A_map.inverse,
             inserter_to_A=side_A_fn(self.inserter_to),
             inserter_to_B=side_B_fn(self.inserter_to),
@@ -251,6 +264,7 @@ class Aggregator:
                         "baselining current state without propagating a change.",
                     )
                     pickle_dump(item, cached_path)
+                    self._remember_baseline(helper, item_id)
                 else:
                     cached_item = pickle_load(cached_path)
                     if self._item_has_update(
@@ -277,6 +291,34 @@ class Aggregator:
     def sync(self) -> None:
         """Entrypoint method."""
         console = Console()
+        try:
+            self._sync_items(console)
+        finally:
+            self._report_item_counts()
+
+    def _report_item_counts(self) -> None:
+        """Print creates, updates, and deletes after every write path has finished."""
+        change_log = getattr(self, "change_log", None)
+        counts = None if change_log is None else change_log.item_counts()
+        logger.warning(
+            "\n\n"
+            + format_item_counts(
+                counts,
+                asana_title=self._side_A.fullname,
+                taskwarrior_title=self._side_B.fullname,
+            ),
+        )
+
+    def _has_recorded_item_edits(self) -> bool:
+        change_log = getattr(self, "change_log", None)
+        if change_log is None:
+            return False
+        return any(
+            counts.created or counts.updated or counts.deleted
+            for counts in change_log.item_counts().values()
+        )
+
+    def _sync_items(self, console: Console) -> None:
 
         self._items_A = {
             str(item[self._helper_A.id_key]): item for item in self._side_A.get_all_items()
@@ -298,8 +340,10 @@ class Aggregator:
                 str(item[self._helper_B.id_key]): item for item in self._side_B.get_all_items()
             }
 
+        self._baselined_item_ids = {}
         changes_A = self.detect_changes(self._helper_A, self._items_A)
         changes_B = self.detect_changes(self._helper_B, self._items_B)
+        completion_repairs = self._stored_completion_repairs(changes_A, changes_B)
 
         side_A_serdes_dir, side_B_serdes_dir = self._get_serdes_dirs(self._helper_A)
         cache_items = [
@@ -314,14 +358,56 @@ class Aggregator:
         ]
 
         total_operations = self._count_sync_operations(changes_A, changes_B)
-        if total_operations == 0:
+        if (
+            total_operations == 0
+            and not completion_repairs
+            and not self._has_recorded_item_edits()
+        ):
             console.print("[bold green]Already in sync[/bold green]")
             return
 
         self._operation_failed = False
         self._operation_errors = []
         self._written_serdes = set()
-        progress = make_progress(console=console, unit="ops")
+        if total_operations:
+            self._synchronize_changes(changes_A, changes_B, total_operations)
+
+        if cache_items:
+            progress = make_progress(console=console, unit="items")
+            with progress:
+                progress_task = progress.add_task("Saving sync state", total=len(cache_items))
+                for helper, item_id, item, serdes_dir in cache_items:
+                    if (helper.name, item_id) not in self._written_serdes:
+                        pickle_dump(item, serdes_dir / item_id)
+                    progress.advance(progress_task)
+
+        self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
+        self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
+        if completion_repairs:
+            self._apply_stored_completion_repairs(completion_repairs)
+            if self._operation_failed:
+                detail = _format_sync_failures(self._operation_errors)
+                raise RuntimeError(
+                    "A stored Asana completion could not be applied to Taskwarrior. "
+                    "Asana was not changed." + (f" {detail}" if detail else ""),
+                )
+
+    def _remember_baseline(self, helper: SideHelper, item_id: ID) -> None:
+        """Remember a snapshot created this run so it cannot authorize a write."""
+        baselined = getattr(self, "_baselined_item_ids", None)
+        if not isinstance(baselined, dict):
+            baselined = {}
+            self._baselined_item_ids = baselined
+        baselined.setdefault(id(helper), set()).add(str(item_id))
+
+    def _synchronize_changes(
+        self,
+        changes_A: SideChanges,
+        changes_B: SideChanges,
+        total_operations: int,
+    ) -> None:
+        """Apply ordinary creates, updates, and deletes, then flush correspondence."""
+        progress = make_progress(console=Console(), unit="ops")
         with progress:
             self._operation_progress = progress
             self._operation_progress_task = progress.add_task(
@@ -350,17 +436,236 @@ class Aggregator:
                 "next run can retry safely." + (f" {detail}" if detail else ""),
             )
 
-        if cache_items:
-            progress = make_progress(console=console, unit="items")
-            with progress:
-                progress_task = progress.add_task("Saving sync state", total=len(cache_items))
-                for helper, item_id, item, serdes_dir in cache_items:
-                    if (helper.name, item_id) not in self._written_serdes:
-                        pickle_dump(item, serdes_dir / item_id)
+    def _stored_completion_repairs(
+        self,
+        changes_A: SideChanges,
+        changes_B: SideChanges,
+    ) -> list[tuple[str, str]]:
+        """Find mapped tasks whose saved snapshots disagree about completion.
+
+        This repairs a previous run that stored Asana as completed and Taskwarrior as
+        pending. It does not run for a task outside the current discovery set, a task
+        whose snapshot was created this run, or a task whose status has changed since
+        the snapshot. Those stay on the normal sync path.
+        """
+        untouched_A = {
+            str(item_id)
+            for item_id in set(changes_A.new).union(changes_A.modified, changes_A.deleted)
+        }
+        untouched_B = {
+            str(item_id)
+            for item_id in set(changes_B.new).union(changes_B.modified, changes_B.deleted)
+        }
+        baselined = getattr(self, "_baselined_item_ids", {})
+        baselined_A = baselined.get(id(self._helper_A), set())
+        baselined_B = baselined.get(id(self._helper_B), set())
+        asana_dir, tw_dir = self._get_serdes_dirs(self._helper_A)
+        repairs: list[tuple[str, str]] = []
+        for raw_tw_id, raw_asana_id in self._B_to_A_map.items():
+            tw_id = str(raw_tw_id)
+            asana_id = str(raw_asana_id)
+            if self._pair_needs_stored_completion_repair(
+                tw_id,
+                asana_id,
+                untouched_A=untouched_A,
+                untouched_B=untouched_B,
+                baselined_A=baselined_A,
+                baselined_B=baselined_B,
+                asana_dir=asana_dir,
+                tw_dir=tw_dir,
+            ):
+                repairs.append((tw_id, asana_id))
+        return repairs
+
+    def _pair_needs_stored_completion_repair(
+        self,
+        tw_id: str,
+        asana_id: str,
+        *,
+        untouched_A: set[str],
+        untouched_B: set[str],
+        baselined_A: set[str],
+        baselined_B: set[str],
+        asana_dir: Path,
+        tw_dir: Path,
+    ) -> bool:
+        if (
+            tw_id in untouched_B
+            or asana_id in untouched_A
+            or tw_id in baselined_B
+            or asana_id in baselined_A
+        ):
+            return False
+        asana_item = self._items_A.get(asana_id)
+        tw_item = self._items_B.get(tw_id)
+        if (
+            asana_item is None
+            or tw_item is None
+            or self._tw_status(tw_item) != "pending"
+            or self._asana_field(asana_item, "completed") is not True
+        ):
+            return False
+        asana_snapshot = self._load_snapshot(asana_dir / asana_id)
+        tw_snapshot = self._load_snapshot(tw_dir / tw_id)
+        if (
+            asana_snapshot is None
+            or tw_snapshot is None
+            or self._asana_field(asana_snapshot, "completed") is not True
+            or self._tw_status(tw_snapshot) != "pending"
+        ):
+            return False
+        if self._asana_completion_time(asana_item) is None:
+            logger.warning(
+                f"Asana task {asana_id} is completed without completed_at; "
+                "leaving the Taskwarrior status unchanged.",
+            )
+            return False
+        return True
+
+    def _apply_stored_completion_repairs(self, repairs: list[tuple[str, str]]) -> None:
+        """Complete Taskwarrior tasks from Asana's stored completion time.
+
+        The write sets Taskwarrior status and end only. Asana is not updated.
+        """
+        tw_side, _asana_side = self._get_side_instances(self._helper_B)
+        _, tw_dir = self._get_serdes_dirs(self._helper_A)
+        progress = make_progress(console=Console(), unit="tasks")
+        with progress:
+            progress_task = progress.add_task(
+                "Applying stored Asana completions",
+                total=len(repairs),
+            )
+            for tw_id, asana_id in repairs:
+                try:
+                    self._apply_one_stored_completion(
+                        tw_id,
+                        asana_id,
+                        tw_side=tw_side,
+                        tw_dir=tw_dir,
+                    )
+                finally:
                     progress.advance(progress_task)
 
-        self._remove_serdes_files(helper=self._helper_B, ids=changes_B.deleted)
-        self._remove_serdes_files(helper=self._helper_A, ids=changes_A.deleted)
+    def _apply_one_stored_completion(
+        self,
+        tw_id: str,
+        asana_id: str,
+        *,
+        tw_side: SyncSide,
+        tw_dir: Path,
+    ) -> None:
+        asana_item = self._items_A[asana_id]
+        completed_at = self._asana_completion_time(asana_item)
+        if completed_at is None:
+            return
+        before = self._items_B.get(tw_id)
+        after: Item | None = None
+        try:
+            tw_side.update_item(tw_id, status="completed", end=completed_at)
+            after = self._read_completed_task(tw_side, tw_id)
+            if not self._tw_end_matches(after, completed_at):
+                tw_side.update_item(tw_id, end=completed_at)
+                after = self._read_completed_task(tw_side, tw_id)
+            end_matches = self._tw_end_matches(after, completed_at)
+            self._checkpoint_tw_item(tw_id, after, tw_dir)
+            note = (
+                "Applied Asana's stored completion to Taskwarrior. Asana was left unchanged."
+            )
+            if not end_matches:
+                note += " Taskwarrior did not store Asana's completion time."
+            self._log_stored_change(
+                helper=self._helper_B,
+                item_id=tw_id,
+                operation="updated",
+                result="succeeded",
+                before=before,
+                after=after,
+                requested=after,
+                note=note,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if after is not None and self._tw_status(after) == "completed":
+                # The Taskwarrior write happened. Keep the snapshot aligned with it so
+                # the next run does not send that completion back to Asana.
+                try:
+                    self._checkpoint_tw_item(tw_id, after, tw_dir)
+                except (OSError, ValueError, TypeError):
+                    logger.warning(
+                        f"Could not save the Taskwarrior snapshot for {tw_id} after "
+                        "applying its Asana completion.",
+                    )
+            self._record_operation_failure(self._helper_B, "Completion repair", exc)
+            self._log_stored_change(
+                helper=self._helper_B,
+                item_id=tw_id,
+                operation="updated",
+                result="failed",
+                before=before,
+                after=after,
+                requested={"status": "completed", "end": completed_at},
+                error=exc,
+                note="Could not apply Asana's stored completion. Asana was left unchanged.",
+            )
+
+    def _read_completed_task(self, tw_side: SyncSide, tw_id: str) -> Item:
+        after = tw_side.get_item(tw_id, use_cached=False)
+        if after is None or self._tw_status(after) != "completed":
+            raise RuntimeError(f"Taskwarrior task {tw_id} did not store the Asana completion.")
+        return after
+
+    def _checkpoint_tw_item(self, tw_id: str, item: Item, tw_dir: Path) -> None:
+        pickle_dump(item, tw_dir / tw_id)
+        self._items_B[tw_id] = item
+
+    def _tw_end_matches(self, item: Item, completed_at: datetime) -> bool:
+        stored_end = self._tw_completion_time(item)
+        if stored_end is None:
+            return False
+        return is_same_datetime(stored_end, completed_at, tol=timedelta(seconds=1))
+
+    def _tw_completion_time(self, item: Item) -> datetime | None:
+        end = self._tw_field(item, "end")
+        if isinstance(end, datetime):
+            return end
+        if end is None or end == "":
+            return None
+        try:
+            return parse_datetime(str(end))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _load_snapshot(path: Path) -> Item | None:
+        if not path.is_file():
+            return None
+        try:
+            return pickle_load(path)
+        except (OSError, ValueError, TypeError):
+            logger.warning(
+                f"Could not read sync snapshot {path}; leaving that task unchanged."
+            )
+            return None
+
+    def _asana_completion_time(self, item: Item) -> datetime | None:
+        """Return Asana's completion timestamp, with no substitute when it is missing."""
+        if self._asana_field(item, "completed") is not True:
+            return None
+        completed_at = self._asana_field(item, "completed_at")
+        if isinstance(completed_at, datetime):
+            return completed_at
+        if completed_at is None or completed_at == "":
+            return None
+        try:
+            return parse_datetime(str(completed_at))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _tw_status(item: Item) -> str | None:
+        status = Aggregator._tw_field(item, "status")
+        if status is None:
+            return None
+        return str(status)
 
     def _comment_sync_functions(self):
         """Return optional comment-sync capabilities, or None for unrelated sync sides."""
